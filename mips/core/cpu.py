@@ -4,7 +4,19 @@ from amaranth.lib.wiring import In, Out, Signature
 from amaranth.lib.wiring import connect, flipped
 from enum import IntEnum
 
-from ALU import ALU
+from .alu import ALU
+
+
+def _connect_interface(m, source, target, *, domain="comb"):
+    """Assign every field from one interface to another."""
+    drive = getattr(m.d, domain)
+    for name, member in target.signature.members.items():
+        src_field = getattr(source, name)
+        dst_field = getattr(target, name)
+        if isinstance(member.shape, Signature):
+            _connect_interface(m, src_field, dst_field, domain=domain)
+        else:
+            drive += dst_field.eq(src_field)
 
 
 # ========== 操作码枚举 ==========
@@ -68,6 +80,7 @@ class Funct(IntEnum):
 # ========== PC 和寄存器文件类 ==========
 class PC(wiring.Component):
     """程序计数器"""
+
     enable: In(1)
     addr_in: In(32)
     addr_out: Out(32)
@@ -93,6 +106,7 @@ class PC(wiring.Component):
 
 class RegFile(wiring.Component):
     """MIPS 寄存器文件（双读单写）"""
+
     # 读端口0
     rd_addr0: In(5)
     rd_data0: Out(32)
@@ -151,65 +165,84 @@ class RegFile(wiring.Component):
 # ========== 流水线接口定义 ==========
 class IFOutput(Signature):
     """IF阶段输出接口"""
+
     def __init__(self):
-        super().__init__({
-            "instruction": Out(32),
-            "pc": Out(32),
-        })
+        super().__init__(
+            {
+                "instruction": Out(32),
+                "pc": Out(32),
+            }
+        )
+
 
 class IDOutput(Signature):
     """ID阶段输出接口"""
+
     def __init__(self):
-        super().__init__({
-            "rs": Out(5),
-            "rt": Out(5),
-            "rs_data": Out(32),
-            "rt_data": Out(32),
-            "imm": Out(16),
-            "shamt": Out(5),
-            # 控制信号
-            "alu_op": Out(4),
-            "alu_src": Out(1),
-            "mem_read": Out(1),
-            "mem_write": Out(1),
-            "write_reg": Out(5),
-            "reg_write": Out(1),
-            "mem_to_reg": Out(1),
-            "pc": Out(32),
-        })
+        super().__init__(
+            {
+                "rs": Out(5),
+                "rt": Out(5),
+                "rs_data": Out(32),
+                "rt_data": Out(32),
+                "imm": Out(16),
+                "shamt": Out(5),
+                # 控制信号
+                "alu_op": Out(4),
+                "alu_src": Out(1),
+                "mem_read": Out(1),
+                "mem_write": Out(1),
+                "write_reg": Out(5),
+                "reg_write": Out(1),
+                "mem_to_reg": Out(1),
+                "pc": Out(32),
+            }
+        )
+
 
 class EXOutput(Signature):
     """EX阶段输出接口"""
+
     def __init__(self):
-        super().__init__({
-            "alu_result": Out(32),
-            "mem_write_data": Out(32),
-            "mem_read": Out(1),
-            "mem_write": Out(1),
-            "write_reg": Out(5),
-            "reg_write": Out(1),
-            "mem_to_reg": Out(1),
-        })
+        super().__init__(
+            {
+                "alu_result": Out(32),
+                "mem_write_data": Out(32),
+                "mem_read": Out(1),
+                "mem_write": Out(1),
+                "write_reg": Out(5),
+                "reg_write": Out(1),
+                "mem_to_reg": Out(1),
+            }
+        )
+
 
 class MEMOutput(Signature):
     """MEM阶段输出接口"""
+
     def __init__(self):
-        super().__init__({
-            "alu_result": Out(32),
-            "mem_data": Out(32),
-            "write_reg": Out(5),
-            "reg_write": Out(1),
-            "mem_to_reg": Out(1),
-        })
+        super().__init__(
+            {
+                "alu_result": Out(32),
+                "mem_data": Out(32),
+                "write_reg": Out(5),
+                "reg_write": Out(1),
+                "mem_to_reg": Out(1),
+            }
+        )
+
 
 class WBOutput(Signature):
     """WB阶段输出接口"""
+
     def __init__(self):
-        super().__init__({
-            "write_data": Out(32),
-            "write_reg": Out(5),
-            "reg_write": Out(1),
-        })
+        super().__init__(
+            {
+                "write_data": Out(32),
+                "write_reg": Out(5),
+                "reg_write": Out(1),
+            }
+        )
 
 
 class IF_Stage(wiring.Component):
@@ -245,7 +278,7 @@ class IF_ID_Pipeline_Reg(wiring.Component):
     def elaborate(self, platform):
         m = Module()
         # 组合逻辑直通，因为指令存储器是同步的，所以需要直通保证时序正确
-        m.d.comb += self.output.eq(self.input)
+        _connect_interface(m, self.input, self.output, domain="comb")
         return m
 
 
@@ -417,7 +450,7 @@ class ID_EX_Pipeline_Reg(wiring.Component):
 
     def elaborate(self, platform):
         m = Module()
-        m.d.sync += self.output.eq(self.input)
+        _connect_interface(m, self.input, self.output, domain="sync")
         return m
 
 
@@ -438,7 +471,7 @@ class EX_Stage(wiring.Component):
         alu_b = Signal(signed(32))
         with m.If(self.input.alu_src == 1):
             # 符号扩展立即数
-            imm_ext = Cat(self.input.imm, Repl(self.input.imm[15], 16))
+            imm_ext = Cat(self.input.imm, self.input.imm[15].replicate(16))
             m.d.comb += alu_b.eq(imm_ext)
         with m.Else():
             m.d.comb += alu_b.eq(self.input.rt_data)
@@ -461,6 +494,7 @@ class EX_Stage(wiring.Component):
 
         return m
 
+
 class EX_MEM_Pipeline_Reg(wiring.Component):
     input: In(EXOutput())
     output: Out(EXOutput())
@@ -470,8 +504,9 @@ class EX_MEM_Pipeline_Reg(wiring.Component):
 
     def elaborate(self, platform):
         m = Module()
-        m.d.sync += self.output.eq(self.input)
+        _connect_interface(m, self.input, self.output, domain="sync")
         return m
+
 
 class MEM_Stage(wiring.Component):
     input: In(EXOutput())
@@ -525,8 +560,9 @@ class MEM_WB_Pipeline_Reg(wiring.Component):
 
     def elaborate(self, platform):
         m = Module()
-        m.d.sync += self.output.eq(self.input)
+        _connect_interface(m, self.input, self.output, domain="sync")
         return m
+
 
 class WB_Stage(wiring.Component):
     input: In(MEMOutput())
@@ -547,6 +583,7 @@ class WB_Stage(wiring.Component):
         m.d.comb += self.output.reg_write.eq(self.input.reg_write)
 
         return m
+
 
 class CPU(wiring.Component):
     # 指令内存接口
@@ -593,9 +630,9 @@ class CPU(wiring.Component):
         m.d.comb += if_stage.pc_in.eq(pc.addr_out)
         # PC 更新逻辑（简化版，后续可添加分支处理）
         with m.If(id_stage.pc_en_out):
-            m.d.comb += pc.pc_in.eq(id_stage.output.pc)
+            m.d.comb += pc.addr_in.eq(id_stage.output.pc)
         with m.Else():
-            m.d.comb += pc.pc_in.eq(pc.pc_out)  # 暂停
+            m.d.comb += pc.addr_in.eq(pc.addr_out)  # 暂停
 
         # ========== 寄存器文件连接 ==========
         # 读端口（ID阶段）
@@ -628,4 +665,3 @@ class CPU(wiring.Component):
         ]
 
         return m
-

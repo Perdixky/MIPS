@@ -1,9 +1,17 @@
+from pathlib import Path
+import sys
+
+# Allow running the script directly (python sim/benches/cpu_test.py)
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
 from amaranth import *
 from amaranth.lib import wiring
 from amaranth.lib.wiring import In, Out, connect
 from amaranth.sim import Simulator
-from CPU import CPU, Opcode, Funct
-from MemoryFile import MemoryFile
+from mips.core.cpu import CPU, Opcode, Funct
+from mips.memory.memory_file import MemoryFile
 
 
 # ========== MIPS指令编码辅助函数 ==========

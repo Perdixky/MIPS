@@ -1,0 +1,29 @@
+# Byte-compiled / cache files
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+
+# Virtual environments
+.venv/
+.env
+.env.*
+.python-version
+.uv/
+
+# Packaging / build artifacts
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# Tooling logs
+*.log
+
+# IDE/editor state
+.idea/
+.vscode/
+*.code-workspace
+
+# Local simulator outputs
+artifacts/waveforms/
