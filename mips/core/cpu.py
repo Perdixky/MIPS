@@ -103,6 +103,23 @@ class PC(wiring.Component):
 
         return m
 
+class PCController(wiring.Component):
+    input: In(PCControllerInput())
+    output: Out(PCRegisterInput())
+
+    def __init__(self):
+        super().__init__()
+
+    def elaborate(self, platform):
+        m = Module()
+
+        with m.If(self.input.stall == 1):
+            m.d.comb += self.output.enable.eq(0)
+        with m.Else():
+            m.d.comb += self.output.enable.eq(1)
+            m.d.comb += self.output.addr_in.eq(self.input.id_next_pc)
+
+        return m
 
 class RegFile(wiring.Component):
     """MIPS 寄存器文件（双读单写）"""
@@ -163,126 +180,235 @@ class RegFile(wiring.Component):
 
 
 # ========== 流水线接口定义 ==========
-class IFOutput(Signature):
+
+class PCRegisterInput(Signature):
+    def __init__(self):
+        super().__init__(
+            {
+                "enable": In(1),
+                "addr_in": In(32),
+                "addr_out": Out(32),
+            }
+        )
+
+class PCControllerInput(Signature):
+    def __init__(self):
+        super().__init__(
+            {
+                "stall": In(1),
+                "id_next_pc": In(32),
+            }
+        )
+
+class IFStageBus(Signature):
     """IF阶段输出接口"""
 
     def __init__(self):
         super().__init__(
             {
-                "instruction": Out(32),
-                "pc": Out(32),
+                "inst_word": Out(32),  # 取出的指令
+                "next_pc": Out(32),  # 对应的下一条指令地址
             }
         )
 
 
-class IDOutput(Signature):
+class IDStageBus(Signature):
     """ID阶段输出接口"""
 
     def __init__(self):
         super().__init__(
             {
-                "rs": Out(5),
-                "rt": Out(5),
-                "rs_data": Out(32),
-                "rt_data": Out(32),
-                "imm": Out(16),
-                "shamt": Out(5),
+                "rs_index": Out(5),
+                "rt_index": Out(5),
+                "rs_value": Out(32),
+                "rt_value": Out(32),
+                "imm_value": Out(16),
+                "shift_amount": Out(5),
                 # 控制信号
-                "alu_op": Out(4),
-                "alu_src": Out(1),
-                "mem_read": Out(1),
-                "mem_write": Out(1),
-                "write_reg": Out(5),
-                "reg_write": Out(1),
-                "mem_to_reg": Out(1),
-                "pc": Out(32),
+                "alu_opcode": Out(4),
+                "alu_operand_sel": Out(1),
+                "mem_read_en": Out(1),
+                "mem_write_en": Out(1),
+                "dest_reg": Out(5),
+                "reg_write_en": Out(1),
+                "mem_to_reg_sel": Out(1),
+                "next_pc": Out(32),
             }
         )
 
 
-class EXOutput(Signature):
+class EXStageBus(Signature):
     """EX阶段输出接口"""
 
     def __init__(self):
         super().__init__(
             {
-                "alu_result": Out(32),
-                "mem_write_data": Out(32),
-                "mem_read": Out(1),
-                "mem_write": Out(1),
-                "write_reg": Out(5),
-                "reg_write": Out(1),
-                "mem_to_reg": Out(1),
+                "alu_result_value": Out(32),
+                "store_data": Out(32),
+                "mem_read_en": Out(1),
+                "mem_write_en": Out(1),
+                "dest_reg": Out(5),
+                "reg_write_en": Out(1),
+                "mem_to_reg_sel": Out(1),
             }
         )
 
 
-class MEMOutput(Signature):
+class MEMStageBus(Signature):
     """MEM阶段输出接口"""
 
     def __init__(self):
         super().__init__(
             {
-                "alu_result": Out(32),
-                "mem_data": Out(32),
-                "write_reg": Out(5),
-                "reg_write": Out(1),
-                "mem_to_reg": Out(1),
+                "alu_result_value": Out(32),
+                "load_data": Out(32),
+                "dest_reg": Out(5),
+                "reg_write_en": Out(1),
+                "mem_to_reg_sel": Out(1),
             }
         )
 
 
-class WBOutput(Signature):
+class WBStageBus(Signature):
     """WB阶段输出接口"""
 
     def __init__(self):
         super().__init__(
             {
-                "write_data": Out(32),
-                "write_reg": Out(5),
-                "reg_write": Out(1),
+                "write_back_data": Out(32),
+                "dest_reg": Out(5),
+                "reg_write_en": Out(1),
             }
         )
 
 
-class IF_Stage(wiring.Component):
-    pc_in: In(32)
-    memory_addr: Out(32)
-    memory_read: In(32)
-    flush: In(1)
+class ForwardingSourceBus(Signature):
+    """流水线转发数据源（EX/MEM和MEM/WB共享）"""
+
+    def __init__(self):
+        super().__init__(
+            {
+                # EX/MEM阶段
+                "ex_mem_reg_write_en": Out(1),
+                "ex_mem_dest_reg": Out(5),
+                "ex_mem_forward_value": Out(32),
+                # MEM/WB阶段
+                "mem_wb_reg_write_en": Out(1),
+                "mem_wb_dest_reg": Out(5),
+                "mem_wb_forward_value": Out(32),
+            }
+        )
+
+
+class ForwardingInput(Signature):
+    """ForwardingUnit输入接口（改进版 - 使用嵌套Signature）"""
+
+    def __init__(self):
+        super().__init__(
+            {
+                # 当前操作数信息（每个ForwardingUnit独立）
+                "id_ex_src_reg": In(5),  # 当前需要读取的寄存器编号
+                "id_ex_fallback_data": In(32),  # ID阶段读到的寄存器数据（备份）
+                # 共享的转发源
+                "forwarding_source": In(ForwardingSourceBus()),
+            }
+        )
+
+
+class HazardDetectionSourceBus(Signature):
+    """Hazard Detection共享源（ID/EX阶段的load信息）"""
+
+    def __init__(self):
+        super().__init__(
+            {
+                "id_ex_mem_read_en": Out(1),  # ID/EX阶段是否为加载指令
+                "id_ex_dest_reg": Out(5),  # ID/EX阶段的目标寄存器
+            }
+        )
+
+
+class HazardDetectionInput(Signature):
+    """Hazard Detection Unit输入接口（每个源寄存器独立）"""
+
+    def __init__(self):
+        super().__init__(
+            {
+                # 当前源寄存器
+                "if_id_src_reg": In(5),  # IF/ID阶段的源寄存器（rs或rt）
+                # 共享的load信息
+                "hazard_source": In(HazardDetectionSourceBus()),
+            }
+        )
+
+
+class HazardDetectionOutput(Signature):
+    """Hazard Detection Unit输出接口"""
+
+    def __init__(self):
+        super().__init__(
+            {
+                "stall": Out(1),  # 该源寄存器是否需要暂停
+            }
+        )
+
+
+class ForwardingOutput(Signature):
+    """ForwardingUnit输出接口"""
+
+    def __init__(self):
+        super().__init__(
+            {
+                "forwarded_value": Out(32),  # 转发后的数据（给EX阶段使用）
+            }
+        )
+
+
+class InstructionFetchStage(wiring.Component):
+    """Instruction Fetch 阶段：根据 PC 取指并产生下一条指令的 PC。"""
+
+    pc_current: In(32)
+    imem_addr: Out(32)
+    imem_data_in: In(32)
+    flush_request: In(1)
 
     # 使用Signature接口输出
-    output: Out(IFOutput())
+    output: Out(IFStageBus())
 
     def __init__(self):
         super().__init__()
 
     def elaborate(self, platform):
         m = Module()
-        m.d.comb += self.output.pc.eq(self.pc_in + 4)
-        with m.If(self.flush):
-            m.d.comb += self.output.instruction.eq(0)  # NOP instruction on flush
+        m.d.comb += self.output.next_pc.eq(self.pc_current + 4)
+        with m.If(self.flush_request):
+            m.d.comb += self.output.inst_word.eq(0)  # NOP instruction on flush
         with m.Else():
-            m.d.comb += self.memory_addr.eq(self.pc_in)
-            m.d.comb += self.output.instruction.eq(self.memory_read)
+            m.d.comb += self.imem_addr.eq(self.pc_current)
+            m.d.comb += self.output.inst_word.eq(self.imem_data_in)
         return m
 
 
-class IF_ID_Pipeline_Reg(wiring.Component):
-    input: In(IFOutput())
-    output: Out(IFOutput())
+class IFIDRegister(wiring.Component):
+    """IF/ID 流水寄存器：缓存取指阶段产生的指令和 PC。"""
+
+    input: In(IFStageBus())
+    stall: In(1)  # 暂停信号
+    output: Out(IFStageBus())
 
     def __init__(self):
         super().__init__()
 
     def elaborate(self, platform):
         m = Module()
-        # 组合逻辑直通，因为指令存储器是同步的，所以需要直通保证时序正确
-        _connect_interface(m, self.input, self.output, domain="comb")
+
+        with m.If(~self.stall):
+            _connect_interface(m, self.input, self.output, domain="sync")
         return m
 
 
-class TwoBitRredictor(wiring.Component):
+class TwoBitPredictor(wiring.Component):
+    """两位饱和计数分支预测器。"""
+
     input_bit: In(1)
     output_bit: Out(1)
 
@@ -300,14 +426,41 @@ class TwoBitRredictor(wiring.Component):
                 m.d.sync += counter.eq(counter - 1)
 
 
-class ID_Stage(wiring.Component):
+class HazardDetectionUnit(wiring.Component):
+    input: In(HazardDetectionInput())
+    output: Out(HazardDetectionOutput())
+
+    def __init__(self):
+        super().__init__()
+
+    def elaborate(self, platform):
+        m = Module()
+
+        # 提取共享源信号
+        haz_src = self.input.hazard_source
+
+        # Load-Use冒险检测：ID/EX阶段是load指令且目标寄存器与当前源寄存器冲突
+        load_use_hazard = (
+            (haz_src.id_ex_mem_read_en == 1)  # ID/EX阶段是load指令
+            & (haz_src.id_ex_dest_reg != 0)  # 目标寄存器不是$0
+            & (haz_src.id_ex_dest_reg == self.input.if_id_src_reg)  # 寄存器冲突
+        )
+
+        m.d.comb += self.output.stall.eq(load_use_hazard)
+
+        return m
+
+
+class InstructionDecodeStage(wiring.Component):
+    """Instruction Decode 阶段：解析指令并生成控制信号、寄存器源数据。"""
+
     # 输入接口
-    input: In(IFOutput())
-    rs_data_in: In(32)
-    rt_data_in: In(32)
+    input: In(IFStageBus())
+    rs_value_in: In(32)
+    rt_value_in: In(32)
 
     # 输出接口
-    output: Out(IDOutput())
+    output: Out(IDStageBus())
     pc_en_out: Out(1)
 
     def __init__(self):
@@ -317,64 +470,64 @@ class ID_Stage(wiring.Component):
         m = Module()
 
         # 提取所有指令都有的字段
-        instruction = self.input.instruction
-        pc_in = self.input.pc
+        inst_word = self.input.inst_word
+        pc_snapshot = self.input.next_pc
 
-        opcode = instruction[26:32]
-        rs = instruction[21:26]
-        rt = instruction[16:21]
+        opcode = inst_word[26:32]
+        rs = inst_word[21:26]
+        rt = inst_word[16:21]
 
         # 默认输出所有指令都有的字段
-        m.d.comb += self.output.rs.eq(rs)
-        m.d.comb += self.output.rt.eq(rt)
-        m.d.comb += self.output.rs_data.eq(self.rs_data_in)
-        m.d.comb += self.output.rt_data.eq(self.rt_data_in)
+        m.d.comb += self.output.rs_index.eq(rs)
+        m.d.comb += self.output.rt_index.eq(rt)
+        m.d.comb += self.output.rs_value.eq(self.rs_value_in)
+        m.d.comb += self.output.rt_value.eq(self.rt_value_in)
 
         # 默认控制信号
-        m.d.comb += self.output.mem_read.eq(0)
-        m.d.comb += self.output.mem_write.eq(0)
-        m.d.comb += self.output.reg_write.eq(0)
-        m.d.comb += self.output.mem_to_reg.eq(0)
+        m.d.comb += self.output.mem_read_en.eq(0)
+        m.d.comb += self.output.mem_write_en.eq(0)
+        m.d.comb += self.output.reg_write_en.eq(0)
+        m.d.comb += self.output.mem_to_reg_sel.eq(0)
         m.d.comb += self.pc_en_out.eq(1)
 
         # 处理PC输出：J型指令跳转，其他指令PC+4
         with m.If((opcode == Opcode.J) | (opcode == Opcode.JAL)):
-            jump_addr = Cat(Const(0, 2), instruction[0:26], pc_in[28:32])
-            m.d.comb += self.output.pc.eq(jump_addr)
+            jump_addr = Cat(Const(0, 2), inst_word[0:26], pc_snapshot[28:32])
+            m.d.comb += self.output.next_pc.eq(jump_addr)
         with m.Else():
-            m.d.comb += self.output.pc.eq(pc_in + 4)
+            m.d.comb += self.output.next_pc.eq(pc_snapshot + 4)
 
         # 按指令类型分组处理
         with m.If(opcode == Opcode.R_TYPE):
             # R型指令：使用寄存器作为ALU操作数
-            m.d.comb += self.output.alu_src.eq(0)
+            m.d.comb += self.output.alu_operand_sel.eq(0)
 
-            rd = instruction[11:16]
-            shamt = instruction[6:11]
-            funct = instruction[0:6]
+            rd = inst_word[11:16]
+            shamt = inst_word[6:11]
+            funct = inst_word[0:6]
 
-            m.d.comb += self.output.shamt.eq(shamt)
+            m.d.comb += self.output.shift_amount.eq(shamt)
 
             # R型指令写回rd，数据来自ALU
-            m.d.comb += self.output.write_reg.eq(rd)
-            m.d.comb += self.output.reg_write.eq(1)
-            m.d.comb += self.output.mem_to_reg.eq(0)
+            m.d.comb += self.output.dest_reg.eq(rd)
+            m.d.comb += self.output.reg_write_en.eq(1)
+            m.d.comb += self.output.mem_to_reg_sel.eq(0)
 
             with m.Switch(funct):
                 with m.Case(Funct.ADD):
-                    m.d.comb += self.output.alu_op.eq(0b0000)
+                    m.d.comb += self.output.alu_opcode.eq(0b0000)
                 with m.Case(Funct.SUB):
-                    m.d.comb += self.output.alu_op.eq(0b0001)
+                    m.d.comb += self.output.alu_opcode.eq(0b0001)
                 with m.Case(Funct.AND):
-                    m.d.comb += self.output.alu_op.eq(0b0010)
+                    m.d.comb += self.output.alu_opcode.eq(0b0010)
                 with m.Case(Funct.OR):
-                    m.d.comb += self.output.alu_op.eq(0b0011)
+                    m.d.comb += self.output.alu_opcode.eq(0b0011)
                 with m.Case(Funct.SLT):
-                    m.d.comb += self.output.alu_op.eq(0b0100)
+                    m.d.comb += self.output.alu_opcode.eq(0b0100)
                 with m.Case(Funct.SLL):
-                    m.d.comb += self.output.alu_op.eq(0b0101)
+                    m.d.comb += self.output.alu_opcode.eq(0b0101)
                 with m.Case(Funct.SRL):
-                    m.d.comb += self.output.alu_op.eq(0b0110)
+                    m.d.comb += self.output.alu_opcode.eq(0b0110)
 
         with m.Elif(
             (opcode == Opcode.ADDI)
@@ -385,65 +538,67 @@ class ID_Stage(wiring.Component):
             | (opcode == Opcode.SW)
         ):
             # I型算术/逻辑/访存指令：使用立即数作为ALU操作数
-            m.d.comb += self.output.alu_src.eq(1)
+            m.d.comb += self.output.alu_operand_sel.eq(1)
 
-            imm = instruction[0:16]
-            m.d.comb += self.output.imm.eq(imm)
+            imm = inst_word[0:16]
+            m.d.comb += self.output.imm_value.eq(imm)
 
             with m.Switch(opcode):
                 with m.Case(Opcode.ADDI):
-                    m.d.comb += self.output.alu_op.eq(0b0000)
-                    m.d.comb += self.output.write_reg.eq(rt)
-                    m.d.comb += self.output.reg_write.eq(1)
+                    m.d.comb += self.output.alu_opcode.eq(0b0000)
+                    m.d.comb += self.output.dest_reg.eq(rt)
+                    m.d.comb += self.output.reg_write_en.eq(1)
                 with m.Case(Opcode.ANDI):
-                    m.d.comb += self.output.alu_op.eq(0b0010)
-                    m.d.comb += self.output.write_reg.eq(rt)
-                    m.d.comb += self.output.reg_write.eq(1)
+                    m.d.comb += self.output.alu_opcode.eq(0b0010)
+                    m.d.comb += self.output.dest_reg.eq(rt)
+                    m.d.comb += self.output.reg_write_en.eq(1)
                 with m.Case(Opcode.ORI):
-                    m.d.comb += self.output.alu_op.eq(0b0011)
-                    m.d.comb += self.output.write_reg.eq(rt)
-                    m.d.comb += self.output.reg_write.eq(1)
+                    m.d.comb += self.output.alu_opcode.eq(0b0011)
+                    m.d.comb += self.output.dest_reg.eq(rt)
+                    m.d.comb += self.output.reg_write_en.eq(1)
                 with m.Case(Opcode.SLTI):
-                    m.d.comb += self.output.alu_op.eq(0b0100)
-                    m.d.comb += self.output.write_reg.eq(rt)
-                    m.d.comb += self.output.reg_write.eq(1)
+                    m.d.comb += self.output.alu_opcode.eq(0b0100)
+                    m.d.comb += self.output.dest_reg.eq(rt)
+                    m.d.comb += self.output.reg_write_en.eq(1)
                 with m.Case(Opcode.LW):
-                    m.d.comb += self.output.alu_op.eq(0b0000)
-                    m.d.comb += self.output.mem_read.eq(1)
-                    m.d.comb += self.output.write_reg.eq(rt)
-                    m.d.comb += self.output.reg_write.eq(1)
-                    m.d.comb += self.output.mem_to_reg.eq(1)
+                    m.d.comb += self.output.alu_opcode.eq(0b0000)
+                    m.d.comb += self.output.mem_read_en.eq(1)
+                    m.d.comb += self.output.dest_reg.eq(rt)
+                    m.d.comb += self.output.reg_write_en.eq(1)
+                    m.d.comb += self.output.mem_to_reg_sel.eq(1)
                 with m.Case(Opcode.SW):
-                    m.d.comb += self.output.alu_op.eq(0b0000)
-                    m.d.comb += self.output.mem_write.eq(1)
+                    m.d.comb += self.output.alu_opcode.eq(0b0000)
+                    m.d.comb += self.output.mem_write_en.eq(1)
                     # SW不写寄存器
 
         with m.Elif((opcode == Opcode.BEQ) | (opcode == Opcode.BNE)):
             # I型分支指令：比较两个寄存器
-            m.d.comb += self.output.alu_src.eq(0)
+            m.d.comb += self.output.alu_operand_sel.eq(0)
 
-            imm = instruction[0:16]
-            m.d.comb += self.output.imm.eq(imm)
+            imm = inst_word[0:16]
+            m.d.comb += self.output.imm_value.eq(imm)
 
             # 分支指令不写寄存器
             with m.Switch(opcode):
                 with m.Case(Opcode.BEQ):
-                    m.d.comb += self.output.alu_op.eq(0b0001)
+                    m.d.comb += self.output.alu_opcode.eq(0b0001)
                 with m.Case(Opcode.BNE):
-                    m.d.comb += self.output.alu_op.eq(0b0001)
+                    m.d.comb += self.output.alu_opcode.eq(0b0001)
 
         with m.Elif(opcode == Opcode.JAL):
             # JAL指令：写$31寄存器，数据来自PC+4
-            m.d.comb += self.output.write_reg.eq(31)
-            m.d.comb += self.output.reg_write.eq(1)
-            m.d.comb += self.output.mem_to_reg.eq(0)
+            m.d.comb += self.output.dest_reg.eq(31)
+            m.d.comb += self.output.reg_write_en.eq(1)
+            m.d.comb += self.output.mem_to_reg_sel.eq(0)
 
         return m
 
 
-class ID_EX_Pipeline_Reg(wiring.Component):
-    input: In(IDOutput())
-    output: Out(IDOutput())
+class IDEXRegister(wiring.Component):
+    """ID/EX 流水寄存器：在译码与执行阶段之间传递控制/数据信号。"""
+
+    input: In(IDStageBus())
+    output: Out(IDStageBus())
 
     def __init__(self):
         super().__init__()
@@ -454,9 +609,67 @@ class ID_EX_Pipeline_Reg(wiring.Component):
         return m
 
 
-class EX_Stage(wiring.Component):
-    input: In(IDOutput())
-    output: Out(EXOutput())
+class ForwardingUnit(wiring.Component):
+    """
+    转发单元（Forwarding Unit）
+
+    功能：检测数据冒险并选择正确的操作数来源
+    - 如果前一条指令（在EX/MEM阶段）会写当前需要的寄存器，从EX/MEM转发
+    - 如果前前条指令（在MEM/WB阶段）会写当前需要的寄存器，从MEM/WB转发
+    - 否则使用ID/EX流水线寄存器中的数据
+
+    注意：$0寄存器永远不转发（因为$0恒为0）
+    """
+
+    input: In(ForwardingInput())
+    output: Out(ForwardingOutput())
+
+    def __init__(self):
+        super().__init__()
+
+    def elaborate(self, platform):
+        m = Module()
+
+        # 为了代码简洁，提取转发源信号
+        fwd_src = self.input.forwarding_source
+
+        # EX hazard: 前一条指令（在EX/MEM）写当前需要的寄存器
+        ex_hazard = (
+            (self.input.id_ex_src_reg != 0)  # 不是$0
+            & fwd_src.ex_mem_reg_write_en  # 前一条指令要写寄存器
+            & (self.input.id_ex_src_reg == fwd_src.ex_mem_dest_reg)  # 寄存器匹配
+        )
+
+        # MEM hazard: 前前条指令（在MEM/WB）写当前需要的寄存器
+        mem_hazard = (
+            (self.input.id_ex_src_reg != 0)  # 不是$0
+            & fwd_src.mem_wb_reg_write_en  # 前前条指令要写寄存器
+            & (self.input.id_ex_src_reg == fwd_src.mem_wb_dest_reg)  # 寄存器匹配
+        )
+
+        # 选择数据源（EX hazard优先级高于MEM hazard）
+        with m.If(ex_hazard):
+            # 从EX/MEM转发
+            m.d.comb += self.output.forwarded_value.eq(fwd_src.ex_mem_forward_value)
+        with m.Elif(mem_hazard):
+            # 从MEM/WB转发
+            m.d.comb += self.output.forwarded_value.eq(fwd_src.mem_wb_forward_value)
+        with m.Else():
+            # 使用ID/EX的数据（无冒险）
+            m.d.comb += self.output.forwarded_value.eq(self.input.id_ex_fallback_data)
+
+        return m
+
+
+class ExecuteStage(wiring.Component):
+    """Execute 阶段：负责 ALU 计算并准备写回/访存数据。"""
+
+    input: In(IDStageBus())
+    output: Out(EXStageBus())
+
+    # 转发数据输入（来自ForwardingUnit的输出）
+    forwarding_rs: In(ForwardingOutput())
+    forwarding_rt: In(ForwardingOutput())
 
     def __init__(self):
         super().__init__()
@@ -467,37 +680,40 @@ class EX_Stage(wiring.Component):
         # 实例化ALU作为子模块
         m.submodules.alu = alu = ALU()
 
-        # ALU 第二操作数选择（立即数或寄存器）
+        # ALU 第二操作数选择（立即数或转发后的寄存器）
         alu_b = Signal(signed(32))
-        with m.If(self.input.alu_src == 1):
+        with m.If(self.input.alu_operand_sel == 1):
             # 符号扩展立即数
-            imm_ext = Cat(self.input.imm, self.input.imm[15].replicate(16))
+            imm_ext = Cat(self.input.imm_value, self.input.imm_value[15].replicate(16))
             m.d.comb += alu_b.eq(imm_ext)
         with m.Else():
-            m.d.comb += alu_b.eq(self.input.rt_data)
+            # 使用转发后的rt数据
+            m.d.comb += alu_b.eq(self.forwarding_rt.forwarded_value)
 
-        # 连接ALU输入
-        m.d.comb += alu.a.eq(self.input.rs_data)
+        # 连接ALU输入（使用转发后的数据）
+        m.d.comb += alu.a.eq(self.forwarding_rs.forwarded_value)
         m.d.comb += alu.b.eq(alu_b)
-        m.d.comb += alu.op.eq(self.input.alu_op)
+        m.d.comb += alu.op.eq(self.input.alu_opcode)
 
         # 连接ALU输出到下一阶段
-        m.d.comb += self.output.alu_result.eq(alu.result)
+        m.d.comb += self.output.alu_result_value.eq(alu.result)
 
-        # 传递其他信号
-        m.d.comb += self.output.mem_write_data.eq(self.input.rt_data)
-        m.d.comb += self.output.mem_read.eq(self.input.mem_read)
-        m.d.comb += self.output.mem_write.eq(self.input.mem_write)
-        m.d.comb += self.output.write_reg.eq(self.input.write_reg)
-        m.d.comb += self.output.reg_write.eq(self.input.reg_write)
-        m.d.comb += self.output.mem_to_reg.eq(self.input.mem_to_reg)
+        # 传递其他信号（mem_write_data也需要使用转发后的rt）
+        m.d.comb += self.output.store_data.eq(self.forwarding_rt.forwarded_value)
+        m.d.comb += self.output.mem_read_en.eq(self.input.mem_read_en)
+        m.d.comb += self.output.mem_write_en.eq(self.input.mem_write_en)
+        m.d.comb += self.output.dest_reg.eq(self.input.dest_reg)
+        m.d.comb += self.output.reg_write_en.eq(self.input.reg_write_en)
+        m.d.comb += self.output.mem_to_reg_sel.eq(self.input.mem_to_reg_sel)
 
         return m
 
 
-class EX_MEM_Pipeline_Reg(wiring.Component):
-    input: In(EXOutput())
-    output: Out(EXOutput())
+class EXMEMRegister(wiring.Component):
+    """EX/MEM 流水寄存器：缓存执行结果供访存阶段使用。"""
+
+    input: In(EXStageBus())
+    output: Out(EXStageBus())
 
     def __init__(self):
         super().__init__()
@@ -508,8 +724,10 @@ class EX_MEM_Pipeline_Reg(wiring.Component):
         return m
 
 
-class MEM_Stage(wiring.Component):
-    input: In(EXOutput())
+class MemoryStage(wiring.Component):
+    """Memory 阶段：与数据存储器交互并产生写回数据。"""
+
+    input: In(EXStageBus())
 
     # 外部内存接口
     mem_addr_out: Out(32)
@@ -518,7 +736,7 @@ class MEM_Stage(wiring.Component):
     mem_read_data_in: In(32)
 
     # 输出到下一阶段
-    output: Out(MEMOutput())
+    output: Out(MEMStageBus())
 
     def __init__(self):
         super().__init__()
@@ -527,33 +745,35 @@ class MEM_Stage(wiring.Component):
         m = Module()
 
         # 总是传递的信号
-        m.d.comb += self.mem_addr_out.eq(self.input.alu_result)
-        m.d.comb += self.output.alu_result.eq(self.input.alu_result)
-        m.d.comb += self.output.write_reg.eq(self.input.write_reg)
-        m.d.comb += self.output.reg_write.eq(self.input.reg_write)
-        m.d.comb += self.output.mem_to_reg.eq(self.input.mem_to_reg)
+        m.d.comb += self.mem_addr_out.eq(self.input.alu_result_value)
+        m.d.comb += self.output.alu_result_value.eq(self.input.alu_result_value)
+        m.d.comb += self.output.dest_reg.eq(self.input.dest_reg)
+        m.d.comb += self.output.reg_write_en.eq(self.input.reg_write_en)
+        m.d.comb += self.output.mem_to_reg_sel.eq(self.input.mem_to_reg_sel)
 
         # 内存操作控制
-        with m.If(self.input.mem_write == 1):
-            m.d.comb += self.mem_write_data_out.eq(self.input.mem_write_data)
+        with m.If(self.input.mem_write_en == 1):
+            m.d.comb += self.mem_write_data_out.eq(self.input.store_data)
             m.d.comb += self.mem_write_en_out.eq(1)
-            m.d.comb += self.output.mem_data.eq(0)  # 写操作时不需要读数据
-        with m.Elif(self.input.mem_read == 1):
+            m.d.comb += self.output.load_data.eq(0)  # 写操作时不需要读数据
+        with m.Elif(self.input.mem_read_en == 1):
             m.d.comb += self.mem_write_en_out.eq(0)
-            m.d.comb += self.output.mem_data.eq(self.mem_read_data_in)
+            m.d.comb += self.output.load_data.eq(self.mem_read_data_in)
             m.d.comb += self.mem_write_data_out.eq(0)  # 读操作时不需要写数据
         with m.Else():
             # 既不读也不写
             m.d.comb += self.mem_write_en_out.eq(0)
-            m.d.comb += self.output.mem_data.eq(0)
+            m.d.comb += self.output.load_data.eq(0)
             m.d.comb += self.mem_write_data_out.eq(0)
 
         return m
 
 
-class MEM_WB_Pipeline_Reg(wiring.Component):
-    input: In(MEMOutput())
-    output: Out(MEMOutput())
+class MEMWBRegister(wiring.Component):
+    """MEM/WB 流水寄存器：在访存和回写之间转发结果。"""
+
+    input: In(MEMStageBus())
+    output: Out(MEMStageBus())
 
     def __init__(self):
         super().__init__()
@@ -564,9 +784,11 @@ class MEM_WB_Pipeline_Reg(wiring.Component):
         return m
 
 
-class WB_Stage(wiring.Component):
-    input: In(MEMOutput())
-    output: Out(WBOutput())
+class WriteBackStage(wiring.Component):
+    """Write Back 阶段：决定写回寄存器堆的数据来源。"""
+
+    input: In(MEMStageBus())
+    output: Out(WBStageBus())
 
     def __init__(self):
         super().__init__()
@@ -574,13 +796,13 @@ class WB_Stage(wiring.Component):
     def elaborate(self, platform):
         m = Module()
 
-        with m.If(self.input.mem_to_reg == 1):
-            m.d.comb += self.output.write_data.eq(self.input.mem_data)
+        with m.If(self.input.mem_to_reg_sel == 1):
+            m.d.comb += self.output.write_back_data.eq(self.input.load_data)
         with m.Else():
-            m.d.comb += self.output.write_data.eq(self.input.alu_result)
+            m.d.comb += self.output.write_back_data.eq(self.input.alu_result_value)
 
-        m.d.comb += self.output.write_reg.eq(self.input.write_reg)
-        m.d.comb += self.output.reg_write.eq(self.input.reg_write)
+        m.d.comb += self.output.dest_reg.eq(self.input.dest_reg)
+        m.d.comb += self.output.reg_write_en.eq(self.input.reg_write_en)
 
         return m
 
@@ -604,64 +826,150 @@ class CPU(wiring.Component):
 
         # ========== 实例化所有子模块 ==========
         m.submodules.pc = pc = PC()
+        m.submodules.pc_controller = pc_controller = PCController()
         m.submodules.regfile = regfile = RegFile()
+        m.submodules.forwarding_unit_rs = forwarding_unit_rs = ForwardingUnit()
+        m.submodules.forwarding_unit_rt = forwarding_unit_rt = ForwardingUnit()
+        m.submodules.hazard_detection_rs = hazard_detection_rs = HazardDetectionUnit()
+        m.submodules.hazard_detection_rt = hazard_detection_rt = HazardDetectionUnit()
 
-        m.submodules.if_stage = if_stage = IF_Stage()
-        m.submodules.if_id_reg = if_id_reg = IF_ID_Pipeline_Reg()
-        m.submodules.id_stage = id_stage = ID_Stage()
-        m.submodules.id_ex_reg = id_ex_reg = ID_EX_Pipeline_Reg()
-        m.submodules.ex_stage = ex_stage = EX_Stage()
-        m.submodules.ex_mem_reg = ex_mem_reg = EX_MEM_Pipeline_Reg()
-        m.submodules.mem_stage = mem_stage = MEM_Stage()
-        m.submodules.mem_wb_reg = mem_wb_reg = MEM_WB_Pipeline_Reg()
-        m.submodules.wb_stage = wb_stage = WB_Stage()
+        m.submodules.fetch_stage = fetch_stage = InstructionFetchStage()
+        m.submodules.if_id_reg = if_id_reg = IFIDRegister()
+        m.submodules.decode_stage = decode_stage = InstructionDecodeStage()
+        m.submodules.id_ex_reg = id_ex_reg = IDEXRegister()
+        m.submodules.execute_stage = execute_stage = ExecuteStage()
+        m.submodules.ex_mem_reg = ex_mem_reg = EXMEMRegister()
+        m.submodules.memory_stage = memory_stage = MemoryStage()
+        m.submodules.mem_wb_reg = mem_wb_reg = MEMWBRegister()
+        m.submodules.writeback_stage = writeback_stage = WriteBackStage()
 
         # ========== 使用 connect 连接流水线阶段 ==========
-        connect(m, if_stage.output, if_id_reg.input)
-        connect(m, if_id_reg.output, id_stage.input)
-        connect(m, id_stage.output, id_ex_reg.input)
-        connect(m, id_ex_reg.output, ex_stage.input)
-        connect(m, ex_stage.output, ex_mem_reg.input)
-        connect(m, ex_mem_reg.output, mem_stage.input)
-        connect(m, mem_stage.output, mem_wb_reg.input)
-        connect(m, mem_wb_reg.output, wb_stage.input)
-
-        # ========== PC 连接 ==========
-        m.d.comb += if_stage.pc_in.eq(pc.addr_out)
-        # PC 更新逻辑（简化版，后续可添加分支处理）
-        with m.If(id_stage.pc_en_out):
-            m.d.comb += pc.addr_in.eq(id_stage.output.pc)
-        with m.Else():
-            m.d.comb += pc.addr_in.eq(pc.addr_out)  # 暂停
+        connect(m, fetch_stage.output, if_id_reg.input)
+        connect(m, if_id_reg.output, decode_stage.input)
+        connect(m, decode_stage.output, id_ex_reg.input)
+        connect(m, id_ex_reg.output, execute_stage.input)
+        connect(m, execute_stage.output, ex_mem_reg.input)
+        connect(m, ex_mem_reg.output, memory_stage.input)
+        connect(m, memory_stage.output, mem_wb_reg.input)
+        connect(m, mem_wb_reg.output, writeback_stage.input)
 
         # ========== 寄存器文件连接 ==========
         # 读端口（ID阶段）
         m.d.comb += [
-            regfile.rd_addr0.eq(id_stage.output.rs),
-            regfile.rd_addr1.eq(id_stage.output.rt),
-            id_stage.rs_data_in.eq(regfile.rd_data0),
-            id_stage.rt_data_in.eq(regfile.rd_data1),
+            regfile.rd_addr0.eq(decode_stage.output.rs_index),
+            regfile.rd_addr1.eq(decode_stage.output.rt_index),
+            decode_stage.rs_value_in.eq(regfile.rd_data0),
+            decode_stage.rt_value_in.eq(regfile.rd_data1),
         ]
 
         # 写端口（WB阶段）
         m.d.comb += [
-            regfile.wr_addr.eq(wb_stage.output.write_reg),
-            regfile.wr_data.eq(wb_stage.output.write_data),
-            regfile.wr_en.eq(wb_stage.output.reg_write),
+            regfile.wr_addr.eq(writeback_stage.output.dest_reg),
+            regfile.wr_data.eq(writeback_stage.output.write_back_data),
+            regfile.wr_en.eq(writeback_stage.output.reg_write_en),
         ]
 
         # ========== 指令内存连接 ==========
         m.d.comb += [
-            self.imem_addr.eq(if_stage.memory_addr),
-            if_stage.memory_read.eq(self.imem_rdata),
+            self.imem_addr.eq(fetch_stage.imem_addr),
+            fetch_stage.imem_data_in.eq(self.imem_rdata),
         ]
 
         # ========== 数据内存连接 ==========
         m.d.comb += [
-            self.dmem_addr.eq(mem_stage.mem_addr_out),
-            self.dmem_wdata.eq(mem_stage.mem_write_data_out),
-            self.dmem_wen.eq(mem_stage.mem_write_en_out),
-            mem_stage.mem_read_data_in.eq(self.dmem_rdata),
+            self.dmem_addr.eq(memory_stage.mem_addr_out),
+            self.dmem_wdata.eq(memory_stage.mem_write_data_out),
+            self.dmem_wen.eq(memory_stage.mem_write_en_out),
+            memory_stage.mem_read_data_in.eq(self.dmem_rdata),
+        ]
+
+        # ========== ForwardingUnit连接（优雅版 - 使用嵌套接口避免重复） ==========
+
+        # 连接共享的转发源到两个ForwardingUnit（只需连接一次！）
+        for fu in [forwarding_unit_rs, forwarding_unit_rt]:
+            m.d.comb += [
+                # EX/MEM阶段转发源
+                fu.input.forwarding_source.ex_mem_reg_write_en.eq(
+                    ex_mem_reg.output.reg_write_en
+                ),
+                fu.input.forwarding_source.ex_mem_dest_reg.eq(
+                    ex_mem_reg.output.dest_reg
+                ),
+                fu.input.forwarding_source.ex_mem_forward_value.eq(
+                    ex_mem_reg.output.alu_result_value
+                ),
+                # MEM/WB阶段转发源
+                fu.input.forwarding_source.mem_wb_reg_write_en.eq(
+                    mem_wb_reg.output.reg_write_en
+                ),
+                fu.input.forwarding_source.mem_wb_dest_reg.eq(
+                    mem_wb_reg.output.dest_reg
+                ),
+                fu.input.forwarding_source.mem_wb_forward_value.eq(
+                    writeback_stage.output.write_back_data
+                ),
+            ]
+
+        # 连接各自的源寄存器和备用数据
+        m.d.comb += [
+            # rs操作数
+            forwarding_unit_rs.input.id_ex_src_reg.eq(id_ex_reg.output.rs_index),
+            forwarding_unit_rs.input.id_ex_fallback_data.eq(id_ex_reg.output.rs_value),
+            # rt操作数
+            forwarding_unit_rt.input.id_ex_src_reg.eq(id_ex_reg.output.rt_index),
+            forwarding_unit_rt.input.id_ex_fallback_data.eq(id_ex_reg.output.rt_value),
+        ]
+
+        # ForwardingUnit输出 → ExecuteStage
+        connect(m, forwarding_unit_rs.output, execute_stage.forwarding_rs)
+        connect(m, forwarding_unit_rt.output, execute_stage.forwarding_rt)
+
+        # ========== HazardDetectionUnit连接（优雅版 - 使用嵌套接口避免重复） ==========
+
+        # 连接共享的hazard源到两个HazardDetectionUnit（只需连接一次！）
+        for hd in [hazard_detection_rs, hazard_detection_rt]:
+            m.d.comb += [
+                # ID/EX阶段的load信息
+                hd.input.hazard_source.id_ex_mem_read_en.eq(
+                    id_ex_reg.output.mem_read_en
+                ),
+                hd.input.hazard_source.id_ex_dest_reg.eq(
+                    id_ex_reg.output.dest_reg
+                ),
+            ]
+
+        # 连接各自的源寄存器（IF/ID阶段）
+        m.d.comb += [
+            # rs操作数
+            hazard_detection_rs.input.if_id_src_reg.eq(if_id_reg.output.inst_word[21:26]),
+            # rt操作数
+            hazard_detection_rt.input.if_id_src_reg.eq(if_id_reg.output.inst_word[16:21]),
+        ]
+
+        # 合并stall信号：任何一个检测到冒险就暂停流水线
+        pipeline_stall = Signal()
+        m.d.comb += pipeline_stall.eq(
+            hazard_detection_rs.output.stall | hazard_detection_rt.output.stall
+        )
+
+        # 连接stall信号到IF/ID寄存器
+        m.d.comb += if_id_reg.stall.eq(pipeline_stall)
+
+        # ========== PC和PCController连接 ==========
+        # PC输出连接到取指阶段
+        m.d.comb += fetch_stage.pc_current.eq(pc.addr_out)
+
+        # PCController输入连接
+        m.d.comb += [
+            pc_controller.input.stall.eq(pipeline_stall),
+            pc_controller.input.id_next_pc.eq(decode_stage.output.next_pc),
+        ]
+
+        # PCController输出连接到PC
+        m.d.comb += [
+            pc.enable.eq(pc_controller.output.enable),
+            pc.addr_in.eq(pc_controller.output.addr_in),
         ]
 
         return m
+

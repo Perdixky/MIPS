@@ -1,7 +1,7 @@
 from amaranth import *
 from amaranth.lib.memory import Memory
-from amaranth.sim import Simulator
 import random
+from sim.test_utils import SimulationSpec, SimulationTest, run_tests_cli
 
 
 class RegFile(Elaboratable):
@@ -54,13 +54,13 @@ class RegFile(Elaboratable):
         return m
 
 
-if __name__ == "__main__":
+def build_register_file_spec() -> SimulationSpec:
     dut = RegFile()
 
     async def bench(ctx):
         # 测试1: 初始状态，所有寄存器应该为0
         print("测试1: 初始读取")
-        for i in range(5):
+        for _ in range(5):
             reg = random.randint(0, 31)
             ctx.set(dut.rd_addr0, reg)
             await ctx.tick()
@@ -78,21 +78,19 @@ if __name__ == "__main__":
         }
 
         for reg, value in test_data.items():
-            # 写入
             ctx.set(dut.wr_addr, reg)
             ctx.set(dut.wr_data, value)
             ctx.set(dut.wr_en, 1)
             await ctx.tick()
             ctx.set(dut.wr_en, 0)
 
-            # 读取并验证
             ctx.set(dut.rd_addr0, reg)
             await ctx.tick()
             read_value = ctx.get(dut.rd_data0)
             print(f"  写入 x{reg} = 0x{value:08X}, 读取 = 0x{read_value:08X}")
             assert read_value == value, f"寄存器 x{reg} 读写不匹配"
 
-        # 测试3: 寄存器0永远为0（RISC-V规则）
+        # 测试3: 寄存器0永远为0
         print("\n测试3: x0 寄存器保护")
         ctx.set(dut.wr_addr, 0)
         ctx.set(dut.wr_data, 0xDEADBEEF)
@@ -118,7 +116,7 @@ if __name__ == "__main__":
         assert data0 == 0x12345678
         assert data1 == 0xDEADBEEF
 
-        # 测试5: 写后读（透明端口测试）
+        # 测试5: 写后立即读取
         print("\n测试5: 写后立即读取（透明度测试）")
         ctx.set(dut.wr_addr, 7)
         ctx.set(dut.wr_data, 0xABCD1234)
@@ -132,10 +130,9 @@ if __name__ == "__main__":
 
         # 测试6: 随机读写测试
         print("\n测试6: 随机读写测试")
-        golden_regs = [0] * 32  # Python模拟的寄存器状态
+        golden_regs = [0] * 32
 
-        for i in range(100):
-            # 随机写入
+        for _ in range(100):
             if random.random() > 0.5:
                 reg = random.randint(0, 31)
                 value = random.randint(0, 0xFFFFFFFF)
@@ -143,12 +140,11 @@ if __name__ == "__main__":
                 ctx.set(dut.wr_data, value)
                 ctx.set(dut.wr_en, 1)
 
-                if reg != 0:  # x0不可写
+                if reg != 0:
                     golden_regs[reg] = value
             else:
                 ctx.set(dut.wr_en, 0)
 
-            # 随机读取并验证
             reg0 = random.randint(0, 31)
             reg1 = random.randint(0, 31)
             ctx.set(dut.rd_addr0, reg0)
@@ -159,17 +155,34 @@ if __name__ == "__main__":
             data0 = ctx.get(dut.rd_data0)
             data1 = ctx.get(dut.rd_data1)
 
-            assert data0 == golden_regs[reg0], \
+            assert data0 == golden_regs[reg0], (
                 f"x{reg0} 不匹配: 期望 0x{golden_regs[reg0]:08X}, 实际 0x{data0:08X}"
-            assert data1 == golden_regs[reg1], \
+            )
+            assert data1 == golden_regs[reg1], (
                 f"x{reg1} 不匹配: 期望 0x{golden_regs[reg1]:08X}, 实际 0x{data1:08X}"
+            )
 
         print("  100次随机读写测试通过!")
-
         print("\n✅ 所有测试通过!")
 
-    sim = Simulator(dut)
-    sim.add_clock(1e-6)
-    sim.add_testbench(bench)
-    with sim.write_vcd("regfile.vcd"):
-        sim.run()
+    return SimulationSpec(dut=dut, bench=bench, vcd_path="regfile.vcd")
+
+
+def get_tests() -> list[SimulationTest]:
+    return [
+        SimulationTest(
+            key="regfile",
+            name="Register File Exhaustive",
+            description="覆盖x0保护、双读口和随机压力的寄存器文件测试。",
+            build=build_register_file_spec,
+            tags=("regfile", "core"),
+        )
+    ]
+
+
+def main() -> int:
+    return run_tests_cli(get_tests())
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

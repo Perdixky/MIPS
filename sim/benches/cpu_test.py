@@ -8,10 +8,10 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from amaranth import *
 from amaranth.lib import wiring
-from amaranth.lib.wiring import In, Out, connect
-from amaranth.sim import Simulator
+from amaranth.lib.wiring import In, Out
 from mips.core.cpu import CPU, Opcode, Funct
 from mips.memory.memory_file import MemoryFile
+from sim.test_utils import SimulationSpec, SimulationTest, run_tests_cli
 
 
 # ========== MIPS指令编码辅助函数 ==========
@@ -93,9 +93,8 @@ async def load_program(ctx, dut, program):
     await ctx.tick()
 
 
-# ========== 测试程序 ==========
-if __name__ == "__main__":
-    # 创建测试台
+def build_cpu_smoke_spec() -> SimulationSpec:
+    """组合CPU的功能测试。"""
     dut = CPUTestBench()
 
     async def bench(ctx):
@@ -105,19 +104,6 @@ if __name__ == "__main__":
 
         # ========== 测试1: R型指令 - ADD ==========
         print("\n测试1: R型指令 - ADD")
-        # 指令序列：
-        # 0: ADDI $1, $0, 5      # $1 = 5
-        # 1: NOP
-        # 2: NOP
-        # 3: NOP
-        # 4: ADDI $2, $0, 3      # $2 = 3
-        # 5: NOP
-        # 6: NOP
-        # 7: NOP
-        # 8: ADD $3, $1, $2      # $3 = $1 + $2 = 8
-        # 9: NOP
-        # ...
-
         program = [
             encode_i_type(Opcode.ADDI, 0, 1, 5),  # $1 = 5
             nop(),
@@ -134,10 +120,8 @@ if __name__ == "__main__":
             nop(),
         ]
 
-        # 加载程序
         await load_program(ctx, dut, program)
 
-        # 运行CPU
         print("  运行CPU...")
         for i in range(20):
             await ctx.tick()
@@ -286,10 +270,24 @@ if __name__ == "__main__":
         print("✓ 所有测试通过!")
         print("=" * 60)
 
-    # 创建仿真器
-    sim = Simulator(dut)
-    sim.add_clock(1e-6)
-    sim.add_testbench(bench)
+    return SimulationSpec(dut=dut, bench=bench, vcd_path="cpu_test.vcd")
 
-    with sim.write_vcd("cpu_test.vcd"):
-        sim.run()
+
+def get_tests() -> list[SimulationTest]:
+    return [
+        SimulationTest(
+            key="cpu-smoke",
+            name="CPU Core Smoke",
+            description="算术/逻辑/访存/移位指令的端到端功能测试。",
+            build=build_cpu_smoke_spec,
+            tags=("cpu", "core"),
+        )
+    ]
+
+
+def main() -> int:
+    return run_tests_cli(get_tests())
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

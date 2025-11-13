@@ -38,10 +38,6 @@ class ALU(wiring.Component):
         return m
 
 
-from amaranth.sim import Simulator
-import random
-
-
 def to_signed_32(value):
     """将 Python 整数转换为 32 位有符号整数"""
     value = value & 0xFFFFFFFF  # 先截断到 32 位
@@ -50,45 +46,52 @@ def to_signed_32(value):
     return value
 
 
-dut = ALU()
+def _self_test() -> None:
+    """Run a quick randomized self-test when invoked directly."""
+    from amaranth.sim import Simulator
+    import random
+
+    dut = ALU()
+
+    async def bench(ctx):
+        ctx.set(dut.op, 0b0000)  # Add
+        for _ in range(10000):
+            a = random.randint(-(2**31), 2**31 - 1)
+            b = random.randint(-(2**31), 2**31 - 1)
+            ctx.set(dut.a, a)
+            ctx.set(dut.b, b)
+            assert ctx.get(dut.result) == to_signed_32(a + b)
+
+        ctx.set(dut.op, 0b0001)  # Subtract
+        for _ in range(10000):
+            a = random.randint(-(2**31), 2**31 - 1)
+            b = random.randint(-(2**31), 2**31 - 1)
+            ctx.set(dut.a, a)
+            ctx.set(dut.b, b)
+            assert ctx.get(dut.result) == to_signed_32(a - b)
+
+        ctx.set(dut.op, 0b0010)  # AND
+        for _ in range(10000):
+            a = random.randint(-(2**31), 2**31 - 1)
+            b = random.randint(-(2**31), 2**31 - 1)
+            ctx.set(dut.a, a)
+            ctx.set(dut.b, b)
+            assert ctx.get(dut.result) == to_signed_32(a & b)
+
+        ctx.set(dut.op, 0b0011)  # OR
+        for _ in range(10000):
+            a = random.randint(-(2**31), 2**31 - 1)
+            b = random.randint(-(2**31), 2**31 - 1)
+            ctx.set(dut.a, a)
+            ctx.set(dut.b, b)
+            assert ctx.get(dut.result) == to_signed_32(a | b)
+
+    sim = Simulator(dut)
+    sim.add_testbench(bench)
+    with sim.write_vcd("ALU.vcd"):
+        sim.run()
+        print("ALU OK!")
 
 
-async def bench(ctx):
-    ctx.set(dut.op, 0b0000)  # Add
-    for _ in range(10000):
-        a = random.randint(-(2**31), 2**31 - 1)
-        b = random.randint(-(2**31), 2**31 - 1)
-        ctx.set(dut.a, a)
-        ctx.set(dut.b, b)
-        assert ctx.get(dut.result) == to_signed_32(a + b)
-
-    ctx.set(dut.op, 0b0001)  # Subtract
-    for _ in range(10000):
-        a = random.randint(-(2**31), 2**31 - 1)
-        b = random.randint(-(2**31), 2**31 - 1)
-        ctx.set(dut.a, a)
-        ctx.set(dut.b, b)
-        assert ctx.get(dut.result) == to_signed_32(a - b)
-
-    ctx.set(dut.op, 0b0010)  # AND
-    for _ in range(10000):
-        a = random.randint(-(2**31), 2**31 - 1)
-        b = random.randint(-(2**31), 2**31 - 1)
-        ctx.set(dut.a, a)
-        ctx.set(dut.b, b)
-        assert ctx.get(dut.result) == to_signed_32(a & b)
-
-    ctx.set(dut.op, 0b0011)  # OR
-    for _ in range(10000):
-        a = random.randint(-(2**31), 2**31 - 1)
-        b = random.randint(-(2**31), 2**31 - 1)
-        ctx.set(dut.a, a)
-        ctx.set(dut.b, b)
-        assert ctx.get(dut.result) == to_signed_32(a | b)
-
-
-sim = Simulator(dut)
-sim.add_testbench(bench)
-with sim.write_vcd("ALU.vcd"):
-    sim.run()
-    print("ALU OK!")
+if __name__ == "__main__":
+    _self_test()

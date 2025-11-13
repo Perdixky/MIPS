@@ -8,3 +8,4 @@ markupsafe>=2.1
 jschon>=0.11
 rfc3986>=2.0
 pyvcd>=0.4
+rich>=13,<14
