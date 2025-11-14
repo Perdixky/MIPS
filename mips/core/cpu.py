@@ -143,38 +143,20 @@ class RegFile(wiring.Component):
 
     def elaborate(self, platform):
         m = Module()
-        from amaranth.lib.memory import Memory
-
-        m.submodules.mem = mem = Memory(shape=32, depth=self.depth, init=[])
-
-        # 创建读写端口
-        wp = mem.write_port(domain="sync")
-        rp0 = mem.read_port(domain="comb")
-        rp1 = mem.read_port(domain="comb")
-
-        # 连接读端口
-        m.d.comb += [
-            rp0.addr.eq(self.rd_addr0),
-            rp1.addr.eq(self.rd_addr1),
-        ]
+        regs = Array(
+            Signal(32, name=f"r{i}", reset=0)
+            for i in range(self.depth)
+        )
 
         # 读寄存器0时总是返回0
-        with m.If(self.rd_addr0 == 0):
-            m.d.comb += self.rd_data0.eq(0)
-        with m.Else():
-            m.d.comb += self.rd_data0.eq(rp0.data)
-
-        with m.If(self.rd_addr1 == 0):
-            m.d.comb += self.rd_data1.eq(0)
-        with m.Else():
-            m.d.comb += self.rd_data1.eq(rp1.data)
+        m.d.comb += [
+            self.rd_data0.eq(Mux(self.rd_addr0 == 0, 0, regs[self.rd_addr0])),
+            self.rd_data1.eq(Mux(self.rd_addr1 == 0, 0, regs[self.rd_addr1])),
+        ]
 
         # 连接写端口(寄存器0不可写)
-        m.d.comb += [
-            wp.addr.eq(self.wr_addr),
-            wp.data.eq(self.wr_data),
-            wp.en.eq(self.wr_en & (self.wr_addr != 0)),
-        ]
+        with m.If(self.wr_en & (self.wr_addr != 0)):
+            m.d.sync += regs[self.wr_addr].eq(self.wr_data)
 
         return m
 
@@ -972,4 +954,3 @@ class CPU(wiring.Component):
         ]
 
         return m
-
