@@ -266,6 +266,37 @@ def build_cpu_smoke_spec() -> SimulationSpec:
 
         print("✓ 测试6完成: SLL指令执行")
 
+        # ========== 测试7: 分支指令 - BEQ（无冒险） ==========
+        print("\n测试7: 分支指令 - BEQ（无冒险）")
+        program = [
+            encode_i_type(Opcode.ADDI, 0, 1, 1),  # $1 = 1
+            nop(),
+            nop(),
+            nop(),
+            encode_i_type(Opcode.ADDI, 0, 2, 1),  # $2 = 1
+            nop(),
+            nop(),
+            nop(),
+            encode_i_type(Opcode.BEQ, 1, 2, 5),  # 若相等，跳到目标块
+            nop(),
+            encode_i_type(Opcode.ADDI, 0, 3, 9),  # 若未跳转，则写入9
+            nop(),
+            nop(),
+            nop(),
+            encode_i_type(Opcode.ADDI, 0, 3, 5),  # 分支目标：写入5
+            nop(),
+            nop(),
+            nop(),
+        ]
+
+        await load_program(ctx, dut, program)
+
+        print("  运行CPU...")
+        for i in range(25):
+            await ctx.tick()
+
+        print("✓ 测试7完成: BEQ指令执行（无冒险）")
+
         print("\n" + "=" * 60)
         print("✓ 所有测试通过!")
         print("=" * 60)

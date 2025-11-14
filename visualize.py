@@ -30,7 +30,7 @@ def check_tool(tool_name, install_hint):
         return False
 
 
-def generate_yosys_visualization(verilog_file, output_format="png"):
+def generate_yosys_visualization(verilog_file, output_format="png", top_module=None):
     """使用 Yosys 生成电路可视化"""
     print("\n" + "=" * 60)
     print(f"方案 1: 使用 Yosys 生成 {output_format.upper()} 格式电路图")
@@ -53,13 +53,15 @@ def generate_yosys_visualization(verilog_file, output_format="png"):
     print(f"输出目录: {output_dir}")
 
     # Yosys 命令：读取 -> 处理 -> 生成图形
+    module_suffix = f" {top_module}" if top_module else ""
+
     yosys_script = f"""
 read_verilog {verilog_path}
 hierarchy -auto-top
 proc
 opt
 clean
-show -format {output_format} -prefix {output_dir / output_prefix}
+show -format {output_format} -prefix {output_dir / output_prefix}{module_suffix}
 """
 
     script_file = output_dir / "yosys_script.ys"
@@ -222,6 +224,11 @@ def main():
         help="Yosys 输出格式 (默认: dot)"
     )
 
+    parser.add_argument(
+        "--top",
+        help="指定 Yosys show 的顶层模块名称（例如 CPU、MemoryFile）"
+    )
+
     args = parser.parse_args()
 
     if not args.yosys and not args.netlistsvg:
@@ -235,7 +242,7 @@ def main():
     success = False
 
     if args.yosys:
-        success = generate_yosys_visualization(args.yosys, args.format)
+        success = generate_yosys_visualization(args.yosys, args.format, args.top)
 
     if args.netlistsvg:
         success = generate_netlistsvg(args.netlistsvg)
