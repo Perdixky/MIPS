@@ -55,11 +55,7 @@ class SimulationTest:
             simulator.add_testbench(spec.bench)
 
             with stdout_cm:
-                vcd_path = (
-                    spec.vcd_path
-                    if spec.vcd_path and os.environ.get("MIPS_SIM_SAVE_VCD", "")
-                    else None
-                )
+                vcd_path = spec.vcd_path
                 if vcd_path:
                     with simulator.write_vcd(vcd_path):
                         simulator.run()

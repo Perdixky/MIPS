@@ -19,8 +19,11 @@ from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
 
+from sim.benches.cpu_branch_forwarding_test import get_tests as get_branch_forwarding_tests
+from sim.benches.cpu_branch_prediction_test import get_tests as get_branch_prediction_tests
 from sim.benches.cpu_forwarding_test import get_tests as get_forwarding_tests
 from sim.benches.cpu_hazard_detection_test import get_tests as get_hazard_detection_tests
+from sim.benches.cpu_full_system_test import get_tests as get_full_system_tests
 from sim.benches.cpu_test import get_tests as get_cpu_tests
 from sim.benches.register_file_test import get_tests as get_regfile_tests
 from sim.test_utils import SimulationTest, TestResult
@@ -43,8 +46,11 @@ BANNER = Text(
 def collect_tests() -> List[SimulationTest]:
     suites = [
         get_cpu_tests,
+        get_full_system_tests,
         get_forwarding_tests,
         get_hazard_detection_tests,
+        get_branch_prediction_tests,
+        get_branch_forwarding_tests,
         get_regfile_tests,
     ]
     tests: List[SimulationTest] = []

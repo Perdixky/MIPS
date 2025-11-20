@@ -55,9 +55,7 @@ MIPS 指令有三种基本格式：
 
 ## I型指令
 
-### 算术和逻辑指令
-
-| opcode | 指令 | 格式 | 功能描述 |
+### pcode | 指令 | 格式 | 功能描述 |
 |--------|------|------|----------|
 | `001000` | **ADDI** | `ADDI rt, rs, imm` | rt = rs + sign_extend(imm) |
 | `001100` | **ANDI** | `ANDI rt, rs, imm` | rt = rs & zero_extend(imm) |

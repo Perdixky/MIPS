@@ -83,6 +83,7 @@ class PC(wiring.Component):
     """程序计数器"""
 
     enable: In(1)
+    reset: In(1)
     addr_in: In(32)
     addr_out: Out(32)
 
@@ -98,8 +99,10 @@ class PC(wiring.Component):
         # 输出：拼接2个0到低位，恢复32位地址
         m.d.comb += self.addr_out.eq(pc_reg << 2)
 
-        # 更新逻辑：enable时写入新值（取addr_in的高30位）
-        with m.If(self.enable):
+        # 更新逻辑：reset时复位到0，enable时写入新值
+        with m.If(self.reset):
+            m.d.sync += pc_reg.eq(0)
+        with m.Elif(self.enable):
             m.d.sync += pc_reg.eq(self.addr_in >> 2)
 
         return m
@@ -149,10 +152,20 @@ class RegFile(wiring.Component):
         regs = Array(Signal(32, name=f"r{i}", reset=0) for i in range(self.depth))
 
         # 读寄存器0时总是返回0
-        m.d.comb += [
-            self.rd_data0.eq(Mux(self.rd_addr0 == 0, 0, regs[self.rd_addr0])),
-            self.rd_data1.eq(Mux(self.rd_addr1 == 0, 0, regs[self.rd_addr1])),
-        ]
+        # 实现"写优先"：如果同时读写同一寄存器，返回写入的值
+        rd_data0_reg = Mux(self.rd_addr0 == 0, 0, regs[self.rd_addr0])
+        rd_data1_reg = Mux(self.rd_addr1 == 0, 0, regs[self.rd_addr1])
+
+        # 写优先转发
+        with m.If(self.wr_en & (self.wr_addr != 0) & (self.wr_addr == self.rd_addr0)):
+            m.d.comb += self.rd_data0.eq(self.wr_data)
+        with m.Else():
+            m.d.comb += self.rd_data0.eq(rd_data0_reg)
+
+        with m.If(self.wr_en & (self.wr_addr != 0) & (self.wr_addr == self.rd_addr1)):
+            m.d.comb += self.rd_data1.eq(self.wr_data)
+        with m.Else():
+            m.d.comb += self.rd_data1.eq(rd_data1_reg)
 
         # 连接写端口(寄存器0不可写)
         with m.If(self.wr_en & (self.wr_addr != 0)):
@@ -190,13 +203,14 @@ class PCControllerInput(Signature):
 
 
 class IFStageBus(Signature):
-    """IF→ID流水寄存器总线：携带取出的指令和对应的PC+4。"""
+    """IF→ID流水寄存器总线：携带取出的指令和对应的PC。"""
 
     def __init__(self):
         super().__init__(
             {
                 "inst_word": Out(32),  # 取出的指令字
                 "next_pc": Out(32),  # 预测的下一条PC地址
+                "current_pc": Out(32),  # 当前指令的PC地址
             }
         )
 
@@ -427,6 +441,8 @@ class InstructionFetchStage(wiring.Component):
     imem_addr: Out(32)
     imem_data_in: In(32)
     flush_request: In(1)
+    stall: In(1)
+    reset: In(1)
 
     # 使用Signature接口输出
     output: Out(IFStageBus())
@@ -438,15 +454,36 @@ class InstructionFetchStage(wiring.Component):
         m = Module()
         m.d.comb += self.btb_lookup_addr.eq(self.pc_current)
 
+        # 保存前一个PC值，用于stall时重新取指
+        prev_pc = Signal(32, reset=0)
+        with m.If(self.reset):
+            m.d.sync += prev_pc.eq(0)
+        with m.Elif(~self.stall):
+            m.d.sync += prev_pc.eq(self.pc_current)
+
+        # 输出当前PC（供ID阶段使用）
+        # stall时使用prev_pc，因为当前指令还没被处理
+        with m.If(self.stall):
+            m.d.comb += self.output.current_pc.eq(prev_pc)
+        with m.Else():
+            m.d.comb += self.output.current_pc.eq(self.pc_current)
+
+        # 暂时禁用BTB预测，总是预测顺序执行
         with m.If(self.btb_hit & (self.btb_predicted_taken == 1)):
             m.d.comb += self.output.next_pc.eq(self.btb_predicted)
         with m.Else():
             m.d.comb += self.output.next_pc.eq(self.pc_current + 4)
 
-        with m.If(self.flush_request):
-            m.d.comb += self.output.inst_word.eq(0)  # NOP instruction on flush
+        # 指令内存地址：stall时使用prev_pc重新取同一条指令
+        with m.If(self.stall):
+            m.d.comb += self.imem_addr.eq(prev_pc)
         with m.Else():
             m.d.comb += self.imem_addr.eq(self.pc_current)
+
+        # 如果 reset 或 flush，输出NOP；否则输出读取的指令
+        with m.If(self.reset | self.flush_request):
+            m.d.comb += self.output.inst_word.eq(0)  # NOP instruction on reset/flush
+        with m.Else():
             m.d.comb += self.output.inst_word.eq(self.imem_data_in)
         return m
 
@@ -562,11 +599,11 @@ class InstructionDecodeStage(wiring.Component):
         with m.If((opcode == Opcode.J) | (opcode == Opcode.JAL)):
             jump_addr = Cat(Const(0, 2), inst_word[0:26], pc_snapshot[28:32])
             m.d.comb += self.output.next_pc.eq(jump_addr)
-            with m.If(self.next_pc != jump_addr):
+            with m.If(self.input.next_pc != jump_addr):
                 m.d.comb += self.flush_request.eq(1)
 
         with m.Else():
-            m.d.comb += self.output.next_pc.eq(self.next_pc)
+            m.d.comb += self.output.next_pc.eq(self.input.next_pc)
 
         # 按指令类型分组处理
         with m.If(opcode == Opcode.R_TYPE):
@@ -656,7 +693,7 @@ class InstructionDecodeStage(wiring.Component):
                         m.d.comb += self.output.next_pc.eq(
                             self.current_pc + 4 + (imm_ext << 2)
                         )
-                        with m.If(self.next_pc != (self.current_pc + 4 + (imm_ext << 2))):
+                        with m.If(self.input.next_pc != (self.current_pc + 4 + (imm_ext << 2))):
                             m.d.comb += self.flush_request.eq(1)
 
                 with m.Case(Opcode.BNE):
@@ -664,7 +701,7 @@ class InstructionDecodeStage(wiring.Component):
                         m.d.comb += self.output.next_pc.eq(
                             self.current_pc + 4 + (imm_ext << 2)
                         )
-                        with m.If(self.next_pc != (self.current_pc + 4 + (imm_ext << 2))):
+                        with m.If(self.input.next_pc != (self.current_pc + 4 + (imm_ext << 2))):
                             m.d.comb += self.flush_request.eq(1)
 
         with m.Elif(opcode == Opcode.JAL):
@@ -680,6 +717,7 @@ class IDEXRegister(wiring.Component):
     """ID/EX 流水寄存器：在译码与执行阶段之间传递控制/数据信号。"""
 
     input: In(IDStageBus())
+    stall: In(1)  # 当stall时插入NOP
     output: Out(IDStageBus())
 
     def __init__(self):
@@ -687,7 +725,35 @@ class IDEXRegister(wiring.Component):
 
     def elaborate(self, platform):
         m = Module()
-        _connect_interface(m, self.input, self.output, domain="sync")
+
+        # 始终传递数据信号
+        m.d.sync += [
+            self.output.rs_index.eq(self.input.rs_index),
+            self.output.rt_index.eq(self.input.rt_index),
+            self.output.rs_value.eq(self.input.rs_value),
+            self.output.rt_value.eq(self.input.rt_value),
+            self.output.imm_value.eq(self.input.imm_value),
+            self.output.shift_amount.eq(self.input.shift_amount),
+            self.output.alu_opcode.eq(self.input.alu_opcode),
+            self.output.alu_operand_sel.eq(self.input.alu_operand_sel),
+            self.output.dest_reg.eq(self.input.dest_reg),
+            self.output.mem_to_reg_sel.eq(self.input.mem_to_reg_sel),
+            self.output.next_pc.eq(self.input.next_pc),
+        ]
+
+        # 控制信号：stall时插入气泡
+        with m.If(self.stall):
+            m.d.sync += [
+                self.output.mem_read_en.eq(0),
+                self.output.mem_write_en.eq(0),
+                self.output.reg_write_en.eq(0),
+            ]
+        with m.Else():
+            m.d.sync += [
+                self.output.mem_read_en.eq(self.input.mem_read_en),
+                self.output.mem_write_en.eq(self.input.mem_write_en),
+                self.output.reg_write_en.eq(self.input.reg_write_en),
+            ]
         return m
 
 
@@ -890,6 +956,9 @@ class WriteBackStage(wiring.Component):
 
 
 class CPU(wiring.Component):
+    # 控制接口
+    reset: In(1)
+
     # 指令内存接口
     imem_addr: Out(32)
     imem_rdata: In(32)
@@ -942,7 +1011,7 @@ class CPU(wiring.Component):
             regfile.rd_addr1.eq(decode_stage.output.rt_index),
             decode_stage.rs_value_in.eq(regfile.rd_data0),
             decode_stage.rt_value_in.eq(regfile.rd_data1),
-            decode_stage.current_pc.eq(pc.addr_out),
+            decode_stage.current_pc.eq(if_id_reg.output.current_pc),
         ]
 
         # 写端口（WB阶段）
@@ -1037,23 +1106,39 @@ class CPU(wiring.Component):
             hazard_detection_rs.output.stall | hazard_detection_rt.output.stall
         )
 
-        # 连接stall信号到IF/ID寄存器
+        # 连接stall信号到IF/ID寄存器、ID/EX寄存器和fetch_stage
         m.d.comb += if_id_reg.stall.eq(pipeline_stall)
+        m.d.comb += id_ex_reg.stall.eq(pipeline_stall)
+        m.d.comb += fetch_stage.stall.eq(pipeline_stall)
+
+        # 连接reset信号
+        m.d.comb += fetch_stage.reset.eq(self.reset)
+
+        # 连接flush_request信号
+        m.d.comb += fetch_stage.flush_request.eq(decode_stage.flush_request)
 
         # ========== PC和PCController连接 ==========
         # PC输出连接到取指阶段
         m.d.comb += fetch_stage.pc_current.eq(pc.addr_out)
 
         # PCController输入连接
+        # 当有分支/跳转时使用decode_stage的next_pc，否则使用fetch_stage的
+        next_pc_sel = Signal(32)
+        with m.If(decode_stage.flush_request):
+            m.d.comb += next_pc_sel.eq(decode_stage.output.next_pc)
+        with m.Else():
+            m.d.comb += next_pc_sel.eq(fetch_stage.output.next_pc)
+
         m.d.comb += [
             pc_controller.input.stall.eq(pipeline_stall),
-            pc_controller.input.id_next_pc.eq(decode_stage.output.next_pc),
+            pc_controller.input.id_next_pc.eq(next_pc_sel),
         ]
 
         # PCController输出连接到PC
         m.d.comb += [
             pc.enable.eq(pc_controller.output.enable),
             pc.addr_in.eq(pc_controller.output.addr_in),
+            pc.reset.eq(self.reset),
         ]
 
         return m
