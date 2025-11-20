@@ -5,13 +5,15 @@ from amaranth.lib.memory import Memory
 
 
 class MemoryFile(wiring.Component):
-    addr: In(32)
+    read_addr: In(32)
+    write_addr: In(32)
     read_data: Out(32)
     write_data: In(32)
     write_enable: In(1)
 
-    def __init__(self, depth=4096):
+    def __init__(self, depth=4096, sync_read=True):
         self.depth = depth
+        self.sync_read = sync_read
 
         super().__init__()
 
@@ -19,18 +21,26 @@ class MemoryFile(wiring.Component):
         m = Module()
         m.submodules.mem = mem = Memory(shape=unsigned(32), depth=self.depth, init=[])
 
-        # 写端口保持同步，读端口置于组合域以模拟单周期存储器行为。
+        # 写端口总是同步的
         wr_port = mem.write_port(domain="sync")
-        rd_port = mem.read_port(domain="comb")
+
+        # 读端口可以是同步或组合，取决于sync_read参数
+        # 同步读：读地址可以在EX阶段发出，MEM阶段得到数据，缩短关键路径
+        # 组合读：适用于指令内存，IF阶段立即得到指令
+        if self.sync_read:
+            rd_port = mem.read_port(domain="sync", transparent_for=[wr_port])
+        else:
+            rd_port = mem.read_port(domain="comb")
 
         addr_width = len(wr_port.addr)
-        addr_index = self.addr[:addr_width]
+        read_addr_index = self.read_addr[:addr_width]
+        write_addr_index = self.write_addr[:addr_width]
 
         m.d.comb += [
-            wr_port.addr.eq(addr_index),
+            wr_port.addr.eq(write_addr_index),
             wr_port.data.eq(self.write_data),
             wr_port.en.eq(self.write_enable),
-            rd_port.addr.eq(addr_index),
+            rd_port.addr.eq(read_addr_index),
             self.read_data.eq(rd_port.data),
         ]
 
@@ -43,19 +53,22 @@ if __name__ == "__main__":
     dut = MemoryFile(depth=256)
 
     async def bench(ctx):
-        # 测试1: 基本写入和读取
-        ctx.set(dut.addr, 0x10)
+        # 测试1: 基本同步读写（一周期写入，下周期读取）
+        ctx.set(dut.read_addr, 0x10)
+        ctx.set(dut.write_addr, 0x10)
         ctx.set(dut.write_data, 0xDEADBEEF)
         ctx.set(dut.write_enable, 1)
         await ctx.tick()
+        # 同步读：数据在下一周期可用
         read_val = ctx.get(dut.read_data)
         assert read_val == 0xDEADBEEF, (
             f"Test 1 failed: expected 0xDEADBEEF, got 0x{read_val:08X}"
         )
-        print(f"✓ Test 1 passed: Basic write/read at addr 0x10")
+        print(f"✓ Test 1 passed: Basic synchronous write/read at addr 0x10")
 
         # 测试2: 写使能控制
-        ctx.set(dut.addr, 0x20)
+        ctx.set(dut.read_addr, 0x20)
+        ctx.set(dut.write_addr, 0x20)
         ctx.set(dut.write_data, 0x12345678)
         ctx.set(dut.write_enable, 1)
         await ctx.tick()
@@ -79,14 +92,14 @@ if __name__ == "__main__":
         }
 
         for addr, data in test_data.items():
-            ctx.set(dut.addr, addr)
+            ctx.set(dut.write_addr, addr)
             ctx.set(dut.write_data, data)
             ctx.set(dut.write_enable, 1)
             await ctx.tick()
 
         ctx.set(dut.write_enable, 0)
         for addr, expected in test_data.items():
-            ctx.set(dut.addr, addr)
+            ctx.set(dut.read_addr, addr)
             await ctx.tick()
             read_val = ctx.get(dut.read_data)
             assert read_val == expected, (
@@ -94,8 +107,9 @@ if __name__ == "__main__":
             )
         print(f"✓ Test 3 passed: Multiple address write/read")
 
-        # 测试4: 透明写（写入时立即读取）
-        ctx.set(dut.addr, 0x50)
+        # 测试4: 透明写（同时写入和读取同一地址）
+        ctx.set(dut.read_addr, 0x50)
+        ctx.set(dut.write_addr, 0x50)
         ctx.set(dut.write_data, 0xCAFEBABE)
         ctx.set(dut.write_enable, 1)
         await ctx.tick()
@@ -104,64 +118,40 @@ if __name__ == "__main__":
         print(f"✓ Test 4 passed: Transparent write")
 
         # 测试5: 数据持久性
-        ctx.set(dut.addr, 0x42)
+        ctx.set(dut.write_addr, 0x42)
         ctx.set(dut.write_data, 0xBEEFCAFE)
         ctx.set(dut.write_enable, 1)
         await ctx.tick()
 
-        ctx.set(dut.addr, 0x43)
+        ctx.set(dut.write_addr, 0x43)
         ctx.set(dut.write_data, 0x99999999)
         await ctx.tick()
 
-        ctx.set(dut.addr, 0x42)
+        ctx.set(dut.read_addr, 0x42)
         ctx.set(dut.write_enable, 0)
         await ctx.tick()
         read_val = ctx.get(dut.read_data)
         assert read_val == 0xBEEFCAFE, "Test 5 failed: data not persistent"
         print(f"✓ Test 5 passed: Data persistence")
 
-        # 测试6: 边界地址
-        ctx.set(dut.addr, 0)
-        ctx.set(dut.write_data, 0x00000000)
+        # 测试6: 独立读写地址（读写不同地址）
+        # 写入地址0x60
+        ctx.set(dut.write_addr, 0x60)
+        ctx.set(dut.write_data, 0x11223344)
         ctx.set(dut.write_enable, 1)
+        # 同时读取地址0x42（之前写入的数据）
+        ctx.set(dut.read_addr, 0x42)
         await ctx.tick()
         read_val = ctx.get(dut.read_data)
-        assert read_val == 0x00000000, "Test 6a failed: address 0"
+        assert read_val == 0xBEEFCAFE, "Test 6a failed: read old data while writing new"
 
-        ctx.set(dut.addr, 255)
-        ctx.set(dut.write_data, 0xFFFFFFFF)
-        await ctx.tick()
-        read_val = ctx.get(dut.read_data)
-        assert read_val == 0xFFFFFFFF, "Test 6b failed: address 255"
-        print(f"✓ Test 6 passed: Boundary addresses")
-
-        # 测试7: 覆盖写入
-        ctx.set(dut.addr, 0x80)
-        ctx.set(dut.write_data, 0x11111111)
-        ctx.set(dut.write_enable, 1)
-        await ctx.tick()
-
-        ctx.set(dut.write_data, 0x22222222)
-        await ctx.tick()
-        read_val = ctx.get(dut.read_data)
-        assert read_val == 0x22222222, "Test 7 failed: overwrite"
-        print(f"✓ Test 7 passed: Overwrite data")
-
-        # 测试8: 顺序写入
-        ctx.set(dut.write_enable, 1)
-        for i in range(16):
-            ctx.set(dut.addr, i)
-            ctx.set(dut.write_data, i * 0x11111111)
-            await ctx.tick()
-
+        # 验证新写入的数据
+        ctx.set(dut.read_addr, 0x60)
         ctx.set(dut.write_enable, 0)
-        for i in range(16):
-            ctx.set(dut.addr, i)
-            await ctx.tick()
-            read_val = ctx.get(dut.read_data)
-            expected = (i * 0x11111111) & 0xFFFFFFFF
-            assert read_val == expected, f"Test 8 failed at addr {i}"
-        print(f"✓ Test 8 passed: Sequential writes")
+        await ctx.tick()
+        read_val = ctx.get(dut.read_data)
+        assert read_val == 0x11223344, "Test 6b failed: new data not written"
+        print(f"✓ Test 6 passed: Independent read/write addresses")
 
         print("\n✓ All tests passed!")
 

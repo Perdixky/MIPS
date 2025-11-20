@@ -59,15 +59,17 @@ class CPUTestBench(wiring.Component):
         m = Module()
 
         m.submodules.cpu = cpu = CPU()
-        m.submodules.imem = imem = MemoryFile(depth=256)
-        m.submodules.dmem = dmem = MemoryFile(depth=256)
+        m.submodules.imem = imem = MemoryFile(depth=256, sync_read=False)
+        m.submodules.dmem = dmem = MemoryFile(depth=256, sync_read=True)
 
         m.d.comb += [
-            imem.addr.eq(Mux(self.imem_init_we, self.imem_init_addr, cpu.imem_addr)),
+            imem.read_addr.eq(Mux(self.imem_init_we, self.imem_init_addr, cpu.imem_addr)),
+            imem.write_addr.eq(self.imem_init_addr),
             imem.write_data.eq(self.imem_init_data),
             imem.write_enable.eq(self.imem_init_we),
             cpu.imem_rdata.eq(imem.read_data),
-            dmem.addr.eq(cpu.dmem_addr),
+            dmem.read_addr.eq(cpu.dmem_read_addr),
+            dmem.write_addr.eq(cpu.dmem_write_addr),
             dmem.write_data.eq(cpu.dmem_wdata),
             dmem.write_enable.eq(cpu.dmem_wen),
             cpu.dmem_rdata.eq(dmem.read_data),

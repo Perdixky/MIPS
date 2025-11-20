@@ -993,8 +993,9 @@ class CPU(wiring.Component):
     imem_addr: Out(32)
     imem_rdata: In(32)
 
-    # 数据内存接口
-    dmem_addr: Out(32)
+    # 数据内存接口（读写地址分离以支持同步内存）
+    dmem_read_addr: Out(32)   # 读地址：来自EX阶段，提前一周期发出
+    dmem_write_addr: Out(32)  # 写地址：来自MEM阶段
     dmem_wdata: Out(32)
     dmem_wen: Out(1)
     dmem_rdata: In(32)
@@ -1058,8 +1059,11 @@ class CPU(wiring.Component):
         ]
 
         # ========== 数据内存连接 ==========
+        # 读地址直接来自EX阶段（组合逻辑），在EX周期发出，MEM周期得到数据
+        # 写地址来自MEM阶段（经过EX/MEM寄存器），与写数据同步
         m.d.comb += [
-            self.dmem_addr.eq(memory_stage.mem_addr_out),
+            self.dmem_read_addr.eq(execute_stage.output.alu_result_value),
+            self.dmem_write_addr.eq(memory_stage.mem_addr_out),
             self.dmem_wdata.eq(memory_stage.mem_write_data_out),
             self.dmem_wen.eq(memory_stage.mem_write_en_out),
             memory_stage.mem_read_data_in.eq(self.dmem_rdata),
