@@ -328,6 +328,9 @@ class HazardDetectionSourceBus(Signature):
             {
                 "id_ex_mem_read_en": Out(1),  # 当前ID/EX是否执行load
                 "id_ex_dest_reg": Out(5),  # load指令准备写入的寄存器
+                "id_ex_reg_write_en": Out(1),  # 当前ID/EX是否写回寄存器
+                "ex_mem_reg_write_en": Out(1),  # EX/MEM阶段是否写回
+                "ex_mem_dest_reg": Out(5),  # EX/MEM阶段目的寄存器
             }
         )
 
@@ -340,6 +343,7 @@ class HazardDetectionInput(Signature):
             {
                 # 当前源寄存器
                 "if_id_src_reg": In(5),  # IF/ID 指令中的源寄存器（rs/rt）
+                "opcode": In(6),  # 当前指令操作码
                 # 共享的load信息
                 "hazard_source": In(HazardDetectionSourceBus()),  # 来自ID/EX的load状态
             }
@@ -546,7 +550,24 @@ class HazardDetectionUnit(wiring.Component):
             & (haz_src.id_ex_dest_reg == self.input.if_id_src_reg)  # 寄存器冲突
         )
 
-        m.d.comb += self.output.stall.eq(load_use_hazard)
+        # Branch Hazard检测：分支需要最新寄存器值，但ID阶段没有转发
+        is_branch = (self.input.opcode == Opcode.BEQ) | (self.input.opcode == Opcode.BNE)
+
+        branch_hazard_ex = (
+            is_branch
+            & (self.input.if_id_src_reg != 0)
+            & haz_src.id_ex_reg_write_en
+            & (haz_src.id_ex_dest_reg == self.input.if_id_src_reg)
+        )
+
+        branch_hazard_mem = (
+            is_branch
+            & (self.input.if_id_src_reg != 0)
+            & haz_src.ex_mem_reg_write_en
+            & (haz_src.ex_mem_dest_reg == self.input.if_id_src_reg)
+        )
+
+        m.d.comb += self.output.stall.eq(load_use_hazard | branch_hazard_ex | branch_hazard_mem)
 
         return m
 
@@ -831,9 +852,17 @@ class ExecuteStage(wiring.Component):
         # ALU 第二操作数选择（立即数或转发后的寄存器）
         alu_b = Signal(signed(32))
         with m.If(self.input.alu_operand_sel == 1):
-            # 符号扩展立即数
-            imm_ext = Cat(self.input.imm_value, self.input.imm_value[15].replicate(16))
-            m.d.comb += alu_b.eq(imm_ext)
+            # 逻辑立即数（ANDI/ORI）使用零扩展，其余指令符号扩展
+            is_logic_imm = (self.input.alu_opcode == 0b0010) | (
+                self.input.alu_opcode == 0b0011
+            )
+            with m.If(is_logic_imm):
+                m.d.comb += alu_b.eq(Cat(self.input.imm_value, Const(0, 16)))
+            with m.Else():
+                imm_ext = Cat(
+                    self.input.imm_value, self.input.imm_value[15].replicate(16)
+                )
+                m.d.comb += alu_b.eq(imm_ext)
         with m.Else():
             # 使用转发后的rt数据
             m.d.comb += alu_b.eq(self.forwarding_rt.forwarded_value)
@@ -841,6 +870,7 @@ class ExecuteStage(wiring.Component):
         # 连接ALU输入（使用转发后的数据）
         m.d.comb += alu.a.eq(self.forwarding_rs.forwarded_value)
         m.d.comb += alu.b.eq(alu_b)
+        m.d.comb += alu.shamt.eq(self.input.shift_amount)
         m.d.comb += alu.op.eq(self.input.alu_opcode)
 
         # 连接ALU输出到下一阶段
@@ -1086,6 +1116,13 @@ class CPU(wiring.Component):
                     id_ex_reg.output.mem_read_en
                 ),
                 hd.input.hazard_source.id_ex_dest_reg.eq(id_ex_reg.output.dest_reg),
+                hd.input.hazard_source.id_ex_reg_write_en.eq(
+                    id_ex_reg.output.reg_write_en
+                ),
+                hd.input.hazard_source.ex_mem_reg_write_en.eq(
+                    ex_mem_reg.output.reg_write_en
+                ),
+                hd.input.hazard_source.ex_mem_dest_reg.eq(ex_mem_reg.output.dest_reg),
             ]
 
         # 连接各自的源寄存器（IF/ID阶段）
@@ -1094,10 +1131,12 @@ class CPU(wiring.Component):
             hazard_detection_rs.input.if_id_src_reg.eq(
                 if_id_reg.output.inst_word[21:26]
             ),
+            hazard_detection_rs.input.opcode.eq(if_id_reg.output.inst_word[26:32]),
             # rt操作数
             hazard_detection_rt.input.if_id_src_reg.eq(
                 if_id_reg.output.inst_word[16:21]
             ),
+            hazard_detection_rt.input.opcode.eq(if_id_reg.output.inst_word[26:32]),
         ]
 
         # 合并stall信号：任何一个检测到冒险就暂停流水线

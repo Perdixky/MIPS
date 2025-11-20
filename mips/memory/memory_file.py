@@ -18,14 +18,19 @@ class MemoryFile(wiring.Component):
     def elaborate(self, platform):
         m = Module()
         m.submodules.mem = mem = Memory(shape=unsigned(32), depth=self.depth, init=[])
+
+        # 写端口保持同步，读端口置于组合域以模拟单周期存储器行为。
         wr_port = mem.write_port(domain="sync")
-        rd_port = mem.read_port(domain="sync", transparent_for=[wr_port])
+        rd_port = mem.read_port(domain="comb")
+
+        addr_width = len(wr_port.addr)
+        addr_index = self.addr[:addr_width]
 
         m.d.comb += [
-            wr_port.addr.eq(self.addr),
+            wr_port.addr.eq(addr_index),
             wr_port.data.eq(self.write_data),
             wr_port.en.eq(self.write_enable),
-            rd_port.addr.eq(self.addr),
+            rd_port.addr.eq(addr_index),
             self.read_data.eq(rd_port.data),
         ]
 

@@ -6,7 +6,8 @@ from amaranth.lib.wiring import In, Out
 class ALU(wiring.Component):
     a: In(signed(32))
     b: In(signed(32))
-    op: In(4)  # 0001: add, 0010: sub, 0010: and, 0011: or
+    shamt: In(5)
+    op: In(4)
     result: Out(signed(32))
     zero: Out(1)
     negative: Out(1)
@@ -27,6 +28,12 @@ class ALU(wiring.Component):
                 m.d.comb += result.eq(self.a & self.b)
             with m.Case(0b0011):  # OR
                 m.d.comb += result.eq(self.a | self.b)
+            with m.Case(0b0100):  # SLT
+                m.d.comb += result.eq(Mux(self.a < self.b, 1, 0))
+            with m.Case(0b0101):  # SLL
+                m.d.comb += result.eq(self.b << self.shamt)
+            with m.Case(0b0110):  # SRL - logical shift right
+                m.d.comb += result.eq(self.b.as_unsigned() >> self.shamt)
 
         # 赋值给输出（隐式截断到32位）
         m.d.comb += self.result.eq(result)
