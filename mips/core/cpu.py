@@ -551,7 +551,9 @@ class HazardDetectionUnit(wiring.Component):
         )
 
         # Branch Hazard检测：分支需要最新寄存器值，但ID阶段没有转发
-        is_branch = (self.input.opcode == Opcode.BEQ) | (self.input.opcode == Opcode.BNE)
+        is_branch = (self.input.opcode == Opcode.BEQ) | (
+            self.input.opcode == Opcode.BNE
+        )
 
         branch_hazard_ex = (
             is_branch
@@ -567,7 +569,9 @@ class HazardDetectionUnit(wiring.Component):
             & (haz_src.ex_mem_dest_reg == self.input.if_id_src_reg)
         )
 
-        m.d.comb += self.output.stall.eq(load_use_hazard | branch_hazard_ex | branch_hazard_mem)
+        m.d.comb += self.output.stall.eq(
+            load_use_hazard | branch_hazard_ex | branch_hazard_mem
+        )
 
         return m
 
@@ -657,6 +661,13 @@ class InstructionDecodeStage(wiring.Component):
                     m.d.comb += self.output.alu_opcode.eq(0b0101)
                 with m.Case(Funct.SRL):
                     m.d.comb += self.output.alu_opcode.eq(0b0110)
+                with m.Case(Funct.JR):
+                    # jr指令：跳转到rs寄存器的值
+                    m.d.comb += self.output.next_pc.eq(self.rs_value_in)
+                    with m.If(self.input.next_pc != self.rs_value_in):
+                        m.d.comb += self.flush_request.eq(1)
+                    # jr不写寄存器
+                    m.d.comb += self.output.reg_write_en.eq(0)
 
         with m.Elif(
             (opcode == Opcode.ADDI)
@@ -714,7 +725,9 @@ class InstructionDecodeStage(wiring.Component):
                         m.d.comb += self.output.next_pc.eq(
                             self.current_pc + 4 + (imm_ext << 2)
                         )
-                        with m.If(self.input.next_pc != (self.current_pc + 4 + (imm_ext << 2))):
+                        with m.If(
+                            self.input.next_pc != (self.current_pc + 4 + (imm_ext << 2))
+                        ):
                             m.d.comb += self.flush_request.eq(1)
 
                 with m.Case(Opcode.BNE):
@@ -722,14 +735,21 @@ class InstructionDecodeStage(wiring.Component):
                         m.d.comb += self.output.next_pc.eq(
                             self.current_pc + 4 + (imm_ext << 2)
                         )
-                        with m.If(self.input.next_pc != (self.current_pc + 4 + (imm_ext << 2))):
+                        with m.If(
+                            self.input.next_pc != (self.current_pc + 4 + (imm_ext << 2))
+                        ):
                             m.d.comb += self.flush_request.eq(1)
 
         with m.Elif(opcode == Opcode.JAL):
-            # JAL指令：写$31寄存器，数据来自PC+4
+            # jal指令：写$31寄存器，数据来自pc+4
             m.d.comb += self.output.dest_reg.eq(31)
             m.d.comb += self.output.reg_write_en.eq(1)
             m.d.comb += self.output.mem_to_reg_sel.eq(0)
+            m.d.comb += self.output.rs_index.eq(0)
+            m.d.comb += self.output.rt_index.eq(0)
+            m.d.comb += self.output.rs_value.eq(self.current_pc + 4)
+            m.d.comb += self.output.rt_value.eq(0)
+            m.d.comb += self.output.alu_operand_sel.eq(0)
 
         return m
 
@@ -994,7 +1014,7 @@ class CPU(wiring.Component):
     imem_rdata: In(32)
 
     # 数据内存接口（读写地址分离以支持同步内存）
-    dmem_read_addr: Out(32)   # 读地址：来自EX阶段，提前一周期发出
+    dmem_read_addr: Out(32)  # 读地址：来自EX阶段，提前一周期发出
     dmem_write_addr: Out(32)  # 写地址：来自MEM阶段
     dmem_wdata: Out(32)
     dmem_wen: Out(1)
@@ -1009,7 +1029,8 @@ class CPU(wiring.Component):
         # ========== 实例化所有子模块 ==========
         m.submodules.pc = pc = PC()
         m.submodules.pc_controller = pc_controller = PCController()
-        m.submodules.regfile = regfile = RegFile()
+        self.regfile = regfile = RegFile()
+        m.submodules.regfile = regfile
         m.submodules.forwarding_unit_rs = forwarding_unit_rs = ForwardingUnit()
         m.submodules.forwarding_unit_rt = forwarding_unit_rt = ForwardingUnit()
         m.submodules.hazard_detection_rs = hazard_detection_rs = HazardDetectionUnit()
