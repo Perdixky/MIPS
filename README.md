@@ -29,6 +29,6 @@ uv pip install -r requirements.txt
 
 ## 当前验证范围
 
-仿真回归覆盖基础指令、前递、分支、访存冒险、JAL 和寄存器文件；Hamming 示例可运行，导出的 Verilog 可通过 Yosys 的 `check`。这些结果说明项目可用于软件仿真和继续开发。仓库没有 FPGA 顶层、引脚约束、板级验证或 ASIC 流程的可复现结果，因此尚不能认定为可直接上板或流片的完整硬件工程。
+仿真回归覆盖基础指令、前递、分支、访存冒险、JAL 和寄存器文件；Hamming 示例可运行，导出的 Verilog 可通过 Yosys 的 `check`。`mips/core/cpu.py` 中的 `CPU` 已是处理器的 RTL 顶层，`generate_verilog.py` 会把它导出为 Verilog 模块 `CPU`。它通过指令和数据存储器接口连接外部系统；若目标是 FPGA 开发板，还需要将 CPU、实际存储器及板上外设连接起来的板级封装、引脚与时钟约束，并完成板级验证。因此目前可用于软件仿真和继续开发，尚未验证为可直接上板或流片的完整工程。
 
 波形文件（`*.vcd`）、生成的 Verilog 和 `build/` 下的分析图都可重新生成，默认不纳入版本控制。
