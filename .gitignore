@@ -27,3 +27,8 @@ dist/
 
 # Local simulator outputs
 artifacts/waveforms/
+*.vcd
+test_output*.txt
+verilog/
+.serena/
+docs/*.pdf

@@ -151,19 +151,19 @@ class BranchHazardBench(wiring.Component):
         m.submodules.dmem = dmem = MemoryFile(depth=256, sync_read=True)
 
         m.d.comb += [
-            imem.read_addr.eq(Mux(self.imem_init_we, self.imem_init_addr, cpu.imem_addr)),
+            imem.read_addr.eq(Mux(self.imem_init_we, self.imem_init_addr, cpu.imem_addr >> 2)),
             imem.write_addr.eq(self.imem_init_addr),
             imem.write_data.eq(self.imem_init_data),
             imem.write_enable.eq(self.imem_init_we),
             cpu.imem_rdata.eq(imem.read_data),
             cpu.reset.eq(self.reset),
-            dmem.read_addr.eq(cpu.dmem_read_addr),
-            dmem.write_addr.eq(cpu.dmem_write_addr),
+            dmem.read_addr.eq(cpu.dmem_read_addr >> 2),
+            dmem.write_addr.eq(cpu.dmem_write_addr >> 2),
             dmem.write_data.eq(cpu.dmem_wdata),
             dmem.write_enable.eq(cpu.dmem_wen),
             cpu.dmem_rdata.eq(dmem.read_data),
             self.debug_pc.eq(cpu.imem_addr),
-            self.dmem_addr_mon.eq(cpu.dmem_addr),
+            self.dmem_addr_mon.eq(cpu.dmem_write_addr),
             self.dmem_wdata_mon.eq(cpu.dmem_wdata),
             self.dmem_wen_mon.eq(cpu.dmem_wen),
         ]
@@ -173,7 +173,7 @@ class BranchHazardBench(wiring.Component):
 async def load_program(ctx, dut, program):
     """Load program into instruction memory and reset CPU."""
     for i, instr in enumerate(program):
-        ctx.set(dut.imem_init_addr, i * 4)
+        ctx.set(dut.imem_init_addr, i)
         ctx.set(dut.imem_init_data, instr)
         ctx.set(dut.imem_init_we, 1)
         await ctx.tick()

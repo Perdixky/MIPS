@@ -56,6 +56,7 @@ class AddiReproBench(wiring.Component):
     reset: In(1)
 
     debug_pc: Out(32)
+    debug_instr: Out(32)
     dmem_addr_mon: Out(32)
     dmem_wdata_mon: Out(32)
     dmem_wen_mon: Out(1)
@@ -66,8 +67,8 @@ class AddiReproBench(wiring.Component):
     def elaborate(self, platform):
         m = Module()
         m.submodules.cpu = cpu = CPU()
-        m.submodules.imem = imem = MemoryFile(depth=256, sync_read=False)
-        m.submodules.dmem = dmem = MemoryFile(depth=256, sync_read=True)
+        m.submodules.imem = imem = MemoryFile(depth=512, sync_read=False)  # 指令内存：组合读
+        m.submodules.dmem = dmem = MemoryFile(depth=512, sync_read=True)   # 数据内存：同步读
 
         m.d.comb += [
             imem.read_addr.eq(Mux(self.imem_init_we, self.imem_init_addr, cpu.imem_addr)),
@@ -82,7 +83,8 @@ class AddiReproBench(wiring.Component):
             dmem.write_enable.eq(cpu.dmem_wen),
             cpu.dmem_rdata.eq(dmem.read_data),
             self.debug_pc.eq(cpu.imem_addr),
-            self.dmem_addr_mon.eq(cpu.dmem_addr),
+            self.debug_instr.eq(imem.read_data),
+            self.dmem_addr_mon.eq(cpu.dmem_write_addr),
             self.dmem_wdata_mon.eq(cpu.dmem_wdata),
             self.dmem_wen_mon.eq(cpu.dmem_wen),
         ]
@@ -95,12 +97,8 @@ async def load_program(ctx, dut, program):
         ctx.set(dut.imem_init_data, instr)
         ctx.set(dut.imem_init_we, 1)
         await ctx.tick()
-        await ctx.tick()
     ctx.set(dut.imem_init_we, 0)
     ctx.set(dut.reset, 1)
-    await ctx.tick()
-    await ctx.tick()
-    await ctx.tick()
     await ctx.tick()
     ctx.set(dut.reset, 0)
 

@@ -286,7 +286,6 @@ async def load_program(ctx, dut, program: List[int]) -> None:
     ctx.set(dut.imem_init_we, 0)
     ctx.set(dut.reset, 1)
     await ctx.tick()
-    await ctx.tick()
     ctx.set(dut.reset, 0)
 
 

@@ -1,67 +1,17 @@
-from amaranth import *
-from amaranth.lib.memory import Memory
 import random
+from mips.core.cpu import RegFile
 from sim.test_utils import SimulationSpec, SimulationTest, run_tests_cli
-
-
-class RegFile(Elaboratable):
-    def __init__(self):
-        # 读端口
-        self.rd_addr0 = Signal(5)
-        self.rd_data0 = Signal(32)
-        self.rd_addr1 = Signal(5)
-        self.rd_data1 = Signal(32)
-
-        # 写端口
-        self.wr_addr = Signal(5)
-        self.wr_data = Signal(32)
-        self.wr_en = Signal()
-
-    def elaborate(self, platform):
-        m = Module()
-
-        mem = Memory(shape=32, depth=32, init=[0] * 32)
-
-        # 创建读写端口
-        wp = mem.write_port(domain="sync")
-        rp0 = mem.read_port(domain="sync", transparent_for=[wp])
-        rp1 = mem.read_port(domain="sync", transparent_for=[wp])
-
-        # 连接读端口
-        m.d.comb += [
-            rp0.addr.eq(self.rd_addr0),
-            rp1.addr.eq(self.rd_addr1),
-        ]
-
-        # 读寄存器0时总是返回0
-        with m.If(self.rd_addr0 == 0):
-            m.d.comb += self.rd_data0.eq(0)
-        with m.Else():
-            m.d.comb += self.rd_data0.eq(rp0.data)
-
-        with m.If(self.rd_addr1 == 0):
-            m.d.comb += self.rd_data1.eq(0)
-        with m.Else():
-            m.d.comb += self.rd_data1.eq(rp1.data)
-
-        # 连接写端口(寄存器0不可写)
-        m.d.comb += [
-            wp.addr.eq(self.wr_addr),
-            wp.data.eq(self.wr_data),
-            wp.en.eq(self.wr_en & (self.wr_addr != 0)),
-        ]
-
-        return m
 
 
 def build_register_file_spec() -> SimulationSpec:
     dut = RegFile()
+    rng = random.Random(0)
 
     async def bench(ctx):
         # 测试1: 初始状态，所有寄存器应该为0
         print("测试1: 初始读取")
         for _ in range(5):
-            reg = random.randint(0, 31)
+            reg = rng.randint(0, 31)
             ctx.set(dut.rd_addr0, reg)
             await ctx.tick()
             value = ctx.get(dut.rd_data0)
@@ -131,11 +81,16 @@ def build_register_file_spec() -> SimulationSpec:
         # 测试6: 随机读写测试
         print("\n测试6: 随机读写测试")
         golden_regs = [0] * 32
+        golden_regs[1] = 0x12345678
+        golden_regs[5] = 0xDEADBEEF
+        golden_regs[7] = 0xABCD1234
+        golden_regs[10] = 0xCAFEBABE
+        golden_regs[31] = 0xFFFFFFFF
 
         for _ in range(100):
-            if random.random() > 0.5:
-                reg = random.randint(0, 31)
-                value = random.randint(0, 0xFFFFFFFF)
+            if rng.random() > 0.5:
+                reg = rng.randint(0, 31)
+                value = rng.randint(0, 0xFFFFFFFF)
                 ctx.set(dut.wr_addr, reg)
                 ctx.set(dut.wr_data, value)
                 ctx.set(dut.wr_en, 1)
@@ -145,8 +100,8 @@ def build_register_file_spec() -> SimulationSpec:
             else:
                 ctx.set(dut.wr_en, 0)
 
-            reg0 = random.randint(0, 31)
-            reg1 = random.randint(0, 31)
+            reg0 = rng.randint(0, 31)
+            reg1 = rng.randint(0, 31)
             ctx.set(dut.rd_addr0, reg0)
             ctx.set(dut.rd_addr1, reg1)
 

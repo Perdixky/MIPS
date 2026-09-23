@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 import itertools
 import sys
 import time
@@ -20,13 +21,17 @@ from rich.table import Table
 from rich.text import Text
 
 from sim.benches.cpu_branch_forwarding_test import get_tests as get_branch_forwarding_tests
+from sim.benches.cpu_branch_hazard_test import get_tests as get_branch_hazard_tests
 from sim.benches.cpu_branch_prediction_test import get_tests as get_branch_prediction_tests
+from sim.benches.cpu_addi_repro_test import get_tests as get_addi_repro_tests
 from sim.benches.cpu_forwarding_test import get_tests as get_forwarding_tests
 from sim.benches.cpu_hazard_detection_test import get_tests as get_hazard_detection_tests
 from sim.benches.cpu_full_system_test import get_tests as get_full_system_tests
+from sim.benches.cpu_load_use_repro_test import get_tests as get_load_use_tests
 from sim.benches.cpu_test import get_tests as get_cpu_tests
 from sim.benches.register_file_test import get_tests as get_regfile_tests
-from sim.test_utils import SimulationTest, TestResult
+from sim.benches.test_jal import get_tests as get_jal_tests
+from sim.test_utils import SimulationTest, TestResult, run_tests_cli
 
 console = Console()
 SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
@@ -52,6 +57,10 @@ def collect_tests() -> List[SimulationTest]:
         get_branch_prediction_tests,
         get_branch_forwarding_tests,
         get_regfile_tests,
+        get_addi_repro_tests,
+        get_branch_hazard_tests,
+        get_load_use_tests,
+        get_jal_tests,
     ]
     tests: List[SimulationTest] = []
     seen_keys: set[str] = set()
@@ -268,11 +277,17 @@ def prompt_command(live: Live) -> str:
 
 
 def main() -> int:
+    parser = argparse.ArgumentParser(description="MIPS 仿真回归测试")
+    parser.add_argument("--all", action="store_true", help="非交互运行全部测试并返回失败状态")
+    args = parser.parse_args()
     try:
         tests = collect_tests()
     except ValueError as exc:
         console.print(exc, style="red")
         return 1
+
+    if args.all:
+        return run_tests_cli(tests)
 
     state: Dict[str, Dict[str, Optional[object]]] = {
         test.key: {"status": "pending", "result": None, "spinner": ""} for test in tests

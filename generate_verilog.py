@@ -65,9 +65,11 @@ def generate_cpu_verilog(output_dir="build/verilog", strip_paths=False):
         cpu,
         name="CPU",
         ports=[
+            cpu.reset,
             cpu.imem_addr,
             cpu.imem_rdata,
-            cpu.dmem_addr,
+            cpu.dmem_read_addr,
+            cpu.dmem_write_addr,
             cpu.dmem_wdata,
             cpu.dmem_wen,
             cpu.dmem_rdata,
@@ -99,7 +101,8 @@ def generate_memory_verilog(output_dir="build/verilog", strip_paths=False, memor
         memory,
         name="MemoryFile",
         ports=[
-            memory.addr,
+            memory.read_addr,
+            memory.write_addr,
             memory.read_data,
             memory.write_data,
             memory.write_enable,
